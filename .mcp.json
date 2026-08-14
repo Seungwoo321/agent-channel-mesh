@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "mesh-spike": {
+      "command": "bun",
+      "args": ["./spike/channel.ts"]
+    }
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "name": "agent-channel-mesh",
+  "version": "0.0.0",
+  "description": "종단 간 암호화된 코딩 에이전트 메시징 메시",
+  "type": "module",
+  "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Seungwoo321/agent-channel-mesh.git"
+  },
+  "bin": {
+    "agent-channel-mesh": "./src/adapter/bin.ts"
+  },
+  "scripts": {
+    "adapter": "bun run src/adapter/bin.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@hpke/chacha20poly1305": "^1.8.0",
+    "@hpke/core": "^1.9.0",
+    "@hpke/dhkem-x25519": "^1.8.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@noble/ciphers": "^2.3.0",
+    "@noble/curves": "^2.3.0",
+    "@noble/hashes": "^2.3.0",
+    "zod": "^4.4.3"
+  }
+}
