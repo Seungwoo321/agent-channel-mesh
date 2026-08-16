@@ -6,13 +6,22 @@
  * 계약이 이 파일이 지키는 것이다.
  */
 import { test, expect, describe, beforeAll } from 'bun:test'
-import { createIdentity, type Identity } from '../src/identity/keys.ts'
-import { Channel } from '../src/channel/channel.ts'
-import { MeshNode } from '../src/node/node.ts'
-import { MemoryStore } from '../src/relay/store.ts'
-import { createHandler } from '../src/relay/http.ts'
-import { RelayClient, RelayError } from '../src/relay/client.ts'
-import { MAX_ENVELOPE_BYTES } from '../src/relay/relay.ts'
+import { createIdentity, type Identity } from '../src/identity/keys.js'
+import { Channel } from '../src/channel/channel.js'
+import { MeshNode } from '../src/node/node.js'
+import { MemoryStore } from '../src/relay/store.js'
+import { createHandler } from '../src/relay/http.js'
+import { RelayClient, RelayError } from '../src/relay/client.js'
+import { MAX_ENVELOPE_BYTES } from '../src/relay/relay.js'
+import {
+  HEADER_KEM,
+  HEADER_NONCE,
+  HEADER_SIG,
+  HEADER_SIGN,
+  HEADER_TIME,
+  parseFetchAuth,
+  verifyFetchAuth,
+} from '../src/relay/fetch-auth.js'
 
 let alice: Identity
 let bob: Identity
@@ -20,6 +29,10 @@ let bob: Identity
 beforeAll(async () => {
   ;[alice, bob] = await Promise.all([createIdentity(), createIdentity()])
 })
+
+function hex(bytes: Uint8Array): string {
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
+}
 
 /** 핸들러를 fetch 처럼 보이게 감싼다. 네트워크 없이 진짜 릴레이를 쓴다. */
 function wired() {
@@ -29,7 +42,7 @@ function wired() {
   return {
     fetch,
     client: (identity: Identity, pollMs = 1) =>
-      new RelayClient({ baseUrl: 'http://relay', keyId: identity.keyId, pollMs, fetch }),
+      new RelayClient({ baseUrl: 'http://relay', identity, pollMs, fetch }),
   }
 }
 
@@ -42,8 +55,8 @@ function pair(fetch: typeof globalThis.fetch) {
     ch.add({ signPublicKey: bob.signPublicKey, kemPublicKey: bob.kemPublicKey, label: 'bob' })
     return ch
   }
-  const relayFor = (id: Identity) =>
-    new RelayClient({ baseUrl: 'http://relay', keyId: id.keyId, pollMs: 1, fetch })
+  const relayFor = (identity: Identity) =>
+    new RelayClient({ baseUrl: 'http://relay', identity, pollMs: 1, fetch })
   const nodeA = new MeshNode({ identity: alice, relay: relayFor(alice) })
   const nodeB = new MeshNode({ identity: bob, relay: relayFor(bob) })
   const id = nodeA.join(build())
@@ -140,7 +153,7 @@ describe('폴링', () => {
     }) as unknown as typeof globalThis.fetch
     const c = new RelayClient({
       baseUrl: 'http://죽은릴레이',
-      keyId: bob.keyId,
+      identity: bob,
       pollMs: 1,
       fetch: failing,
     })
@@ -153,6 +166,63 @@ describe('폴링', () => {
     c.stop()
     expect(race).toBe('여전히 살아 있음')
     expect(calls).toBeGreaterThan(0)
+  })
+})
+
+describe('수신함 조회 인증 (§10.12)', () => {
+  /** 요청 헤더를 붙잡으면서 진짜 핸들러로 넘긴다. 목이 아니라 관찰이다. */
+  function capturing() {
+    const handle = createHandler({ store: new MemoryStore() })
+    const seen: Headers[] = []
+    const fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      const req = new Request(input as string, init)
+      seen.push(req.headers)
+      return handle(req)
+    }) as typeof globalThis.fetch
+    return {
+      seen,
+      client: (identity: Identity) =>
+        new RelayClient({ baseUrl: 'http://relay', identity, pollMs: 1, fetch }),
+    }
+  }
+
+  test('조회 요청이 릴레이가 검증할 수 있는 인증 헤더를 싣는다', async () => {
+    const { seen, client } = capturing()
+    await client(bob).fetchInbox()
+
+    const headers = seen[0]!
+    for (const name of [HEADER_KEM, HEADER_SIGN, HEADER_SIG, HEADER_TIME, HEADER_NONCE]) {
+      expect(headers.get(name)).not.toBeNull()
+    }
+
+    // 헤더가 실렸다는 것만으로는 부족하다 — 릴레이가 쓰는 바로 그 검증기를
+    // 통과해야 2c 에서 강제를 켜도 클라이언트가 살아남는다.
+    const auth = parseFetchAuth(headers)
+    expect(auth).not.toBeNull()
+    expect(verifyFetchAuth(hex(bob.keyId), auth!, Date.now())).toEqual({ ok: true })
+  })
+
+  test('남의 key id 로는 검증되지 않는다 — 서명이 큐에 묶여 있다', async () => {
+    const { seen, client } = capturing()
+    await client(bob).fetchInbox()
+
+    const auth = parseFetchAuth(seen[0]!)
+    expect(verifyFetchAuth(hex(alice.keyId), auth!, Date.now())).toMatchObject({
+      ok: false,
+      reason: 'key-id-mismatch',
+    })
+  })
+
+  test('매 요청의 nonce 가 다르다', async () => {
+    const { seen, client } = capturing()
+    const c = client(bob)
+    await c.fetchInbox()
+    await c.fetchInbox()
+
+    expect(seen).toHaveLength(2)
+    expect(seen[0]!.get(HEADER_NONCE)).not.toBe(seen[1]!.get(HEADER_NONCE))
+    // 서명도 함께 갈린다 — 같은 밀리초에 서명해도 재생할 바이트가 겹치지 않는다.
+    expect(seen[0]!.get(HEADER_SIG)).not.toBe(seen[1]!.get(HEADER_SIG))
   })
 })
 

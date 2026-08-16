@@ -7,7 +7,19 @@
  * 표준 `Request`/`Response` 만 쓰므로 `Bun.serve()` 와 서버리스 함수
  * (Vercel·Cloudflare) 양쪽에 같은 핸들러가 올라간다.
  */
-import { Relay, type RelayOptions } from './relay.ts'
+import { Relay, type RelayOptions } from './relay.js'
+import {
+  parseFetchAuth,
+  verifyFetchAuth,
+  HEADER_KEM,
+  HEADER_SIGN,
+  HEADER_SIG,
+  HEADER_TIME,
+  HEADER_NONCE,
+} from './fetch-auth.js'
+
+/** 조회에 필요한 헤더 목록. 이름은 `fetch-auth` 가 단일 정의한다. */
+const AUTH_HEADERS = [HEADER_KEM, HEADER_SIGN, HEADER_SIG, HEADER_TIME, HEADER_NONCE].join(', ')
 
 /** key id hex 8바이트 = 16자. 경로에서 받는 값이라 형태를 검증한다. */
 const KEY_ID_PATTERN = /^[0-9a-f]{16}$/i
@@ -50,9 +62,18 @@ export interface HttpOptions extends RelayOptions {
  * GET  /health            상태 확인
  * ```
  *
- * `/fetch` 에 인증이 없다 — key id 만 알면 남의 큐를 비울 수 있다.
- * 읽지는 못하지만 전달을 막을 수 있다. 알려진 v1 한계이며 근거와
- * 대안은 `docs/architecture.md` §10.12.
+ * `/fetch` 는 서명으로 인증한다 (§10.12). 요청이 두 공개키와 서명을 함께
+ * 싣고, 릴레이는 key id 를 그 공개키에서 다시 파생해 대조한 뒤 서명을 본다 —
+ * 저장하는 매핑이 없으므로 무상태가 유지된다. 남는 한계는 둘이다.
+ *
+ * - 시간 창(`FETCH_WINDOW_MS`) 안에 캡처된 요청은 재생될 수 있다. 릴레이가
+ *   무상태라 이미 본 nonce 를 기억하지 못한다.
+ * - 인증이 서명 공개키를 릴레이에 넘기므로 릴레이는 §9 지문을 계산할 수 있다.
+ *   메시지 내용에는 여전히 닿지 못한다.
+ *
+ * `POST /post` 는 인증하지 않는다. 큐에 넣는 것은 남의 것을 뺏는 동작이
+ * 아니고(드레인과 달리 아무것도 사라지지 않는다), 봉투는 이미 자체 서명돼
+ * 있어 수신자가 발신자를 확인한다 (§8). 릴레이가 더 볼 것이 없다.
  */
 export function createHandler(options: HttpOptions): (req: Request) => Promise<Response> {
   const relay = new Relay(options)
@@ -90,6 +111,36 @@ export function createHandler(options: HttpOptions): (req: Request) => Promise<R
           400,
         )
       }
+
+      // 인증은 저장소를 건드리기 **전에** 끝난다. 그래서 통과하지 못한 쪽은
+      // 그 key id 의 큐가 존재하는지조차 알 수 없고(응답이 큐 상태에 의존하지
+      // 않는다), 무엇보다 큐가 비워지지 않는다 — 드레인은 검증을 통과한
+      // 요청만 한다 (`docs/architecture.md` §10.12). 실패를 빈 배열로 답하면
+      // 호출자는 "메시지가 없다" 와 "인증이 틀렸다" 를 구분하지 못한 채
+      // 영영 못 받는 상태를 정상으로 오해한다.
+      //
+      // 상수시간 비교가 필요 없다. 여기서 견주는 값은 경로의 key id, 두 공개키,
+      // 서명뿐이고 전부 공개값이다 — 비밀이 개입하지 않으므로 비교 시간이
+      // 새어도 공격자가 알게 되는 것이 없다(이미 아는 값이다).
+      const auth = parseFetchAuth(req.headers)
+      if (!auth) {
+        return json<ErrorBody>(
+          {
+            ok: false,
+            reason: 'missing-auth',
+            detail: `조회에는 인증 헤더가 필요하다: ${AUTH_HEADERS} (§10.12)`,
+          },
+          401,
+        )
+      }
+      const verified = verifyFetchAuth(keyId, auth, Date.now())
+      if (!verified.ok) {
+        return json<ErrorBody>(
+          { ok: false, reason: verified.reason, detail: verified.detail },
+          401,
+        )
+      }
+
       const items = await relay.fetch(keyId, fetchLimit)
       // 봉투는 바이너리다. JSON 에 담기 위해 base64 로 옮긴다.
       return json<FetchBody>({

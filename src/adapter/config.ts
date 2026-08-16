@@ -11,10 +11,10 @@
  * 메시지를 전부 읽을 수 있다. 따라서 로드할 때 권한을 **검사해서 막는다**.
  * 문서로만 경고하면 지켜지지 않고, 지켜지지 않은 것이 조용히 동작한다.
  */
-import { deriveIdentity, type Identity } from '../identity/keys.ts'
-import { Channel } from '../channel/channel.ts'
-import { MeshNode } from '../node/node.ts'
-import { RelayClient } from '../relay/client.ts'
+import { deriveIdentity, type Identity } from '../identity/keys.js'
+import { Channel } from '../channel/channel.js'
+import { MeshNode } from '../node/node.js'
+import { RelayClient } from '../relay/client.js'
 
 /** 기본 설정 위치. `ACM_CONFIG` 로 덮어쓴다. */
 export const DEFAULT_CONFIG_PATH = '~/.agent-channel-mesh/config.json'
@@ -90,7 +90,7 @@ export async function loadConfig(path: string, options: LoadOptions = {}): Promi
   const found = await mode(file)
   if (found !== undefined && (found & ~MAX_MODE) !== 0) {
     throw new Error(
-      `설정 파일 권한이 너무 넓다: ${file} 은 ${found.toString(8).padStart(3, '0')} 다. ` +
+      `설정 파일 권한이 너무 넓다 — ${file} (권한 ${found.toString(8).padStart(3, '0')}). ` +
         `시드와 채널 비밀이 들어 있으므로 chmod 600 으로 좁혀라.`,
     )
   }
@@ -149,7 +149,7 @@ export function validate(raw: unknown): Config {
 export async function buildNode(config: Config): Promise<{ node: MeshNode; identity: Identity }> {
   const identity = await deriveIdentity(fromHex(config.seed, 32))
   const relay = config.relay
-    ? new RelayClient({ baseUrl: config.relay, keyId: identity.keyId })
+    ? new RelayClient({ baseUrl: config.relay, identity })
     : undefined
   const node = new MeshNode({ identity, relay })
 

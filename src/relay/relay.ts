@@ -16,8 +16,8 @@
  * 그 key id 는 평문 헤더에 있고(§10.6), 그것이 릴레이가 라우팅에
  * 필요한 전부다.
  */
-import { decode, MAX_BODY_BYTES, MAX_RECIPIENTS } from '../crypto/envelope.ts'
-import type { Store, Stored } from './store.ts'
+import { decode, MAX_BODY_BYTES, MAX_RECIPIENTS } from '../crypto/envelope.js'
+import type { Store, Stored } from './store.js'
 
 /** 봉투 하나의 전송 크기 상한. 본문 상한 + 최대 팬아웃 오버헤드에 여유. */
 export const MAX_ENVELOPE_BYTES = MAX_BODY_BYTES + 64 * 1024
@@ -102,9 +102,9 @@ export class Relay {
   /**
    * 수신자 큐를 비우며 가져간다.
    *
-   * **인증이 없다.** key id 만 알면 누구나 남의 큐를 비울 수 있다 —
-   * 그것으로 읽지는 못하지만(암호문이다) 전달을 막을 수는 있다.
-   * 이건 v1 의 알려진 한계이며, `docs/architecture.md` §10.12 에 적혀 있다.
+   * **여기서 인증하지 않는다.** 폴링 인증(§10.12)은 HTTP 계층의 책임이다 —
+   * 인증 재료가 요청 헤더로 오기 때문이다. 이 메서드에 닿았다는 것은
+   * 이미 검증을 통과했다는 뜻이므로, 호출자는 반드시 그 순서를 지킨다.
    */
   async fetch(recipientKeyId: string, limit?: number): Promise<Stored[]> {
     const n = Math.min(limit ?? this.drainLimit, this.drainLimit)
