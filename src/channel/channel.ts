@@ -10,9 +10,10 @@
 import { hmac } from '@noble/hashes/hmac.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { randomBytes } from '@noble/hashes/utils.js'
-import { fingerprint, toHex } from '../identity/fingerprint.ts'
-import { keyIdOf } from '../crypto/seal.ts'
-import { CHANNEL_TAG_BYTES, MAX_RECIPIENTS } from '../crypto/envelope.ts'
+import { fingerprint, toHex } from '../identity/fingerprint.js'
+// 파생 소유자는 신원 모듈이다 — 채널이 key id 하나 때문에 암호 모듈을 거칠 이유가 없다.
+import { keyIdOf } from '../identity/keys.js'
+import { CHANNEL_TAG_BYTES, MAX_RECIPIENTS } from '../crypto/envelope.js'
 
 /** 채널 비밀 32B. 멤버만 안다 — 초대는 이 비밀을 전달하는 것이다 (§10.11). */
 export const CHANNEL_SECRET_BYTES = 32
@@ -57,7 +58,7 @@ export interface Member {
 export interface ResolvedMember extends Member {
   /** 128비트 지문 (§9). 사람이 대조하는 값. */
   readonly fingerprint: Uint8Array
-  /** KEM key id 8B. 봉투에서 자기 몫을 찾는 값. */
+  /** key id 8B — 두 공개키에서 함께 파생한다 (§10.12). 봉투에서 자기 몫을 찾는 값. */
   readonly keyId: Uint8Array
 }
 
@@ -101,24 +102,43 @@ export class Channel {
    * **허용목록에 넣는 것은 권한을 주는 것이다.** 권한 중계를 켜면 이 멤버가
    * 내 세션의 도구 사용을 승인·거부할 수 있다. 호출자는 지문을 사람이
    * 대조한 뒤에만 이걸 불러야 한다.
+   *
+   * key id 가 두 공개키에서 함께 나오므로(§10.12) "같은 key id, 다른 서명키"는
+   * 더 이상 충돌하지 않는다. 그 대신 **한쪽 키만 갈아 끼운 등록**을 직접
+   * 막는다 — 그러지 않으면 조용히 별도 멤버로 들어앉아 사칭이 통과한다.
+   * 한 번의 스캔으로 양방향을 본다: 멤버 수가 MAX_RECIPIENTS 로 묶여 있고
+   * 추가는 사람이 지문을 대조한 뒤에만 일어나므로, 보조 색인을 따로 두어
+   * `remove()` 와 어긋날 여지를 만드는 것보다 이쪽이 안전하다.
    */
   add(member: Member): ResolvedMember {
     if (member.signPublicKey.length !== 32) throw new Error('서명 공개키는 32바이트여야 한다')
     if (member.kemPublicKey.length !== 32) throw new Error('KEM 공개키는 32바이트여야 한다')
 
-    const keyId = keyIdOf(member.kemPublicKey)
+    const keyId = keyIdOf(member.kemPublicKey, member.signPublicKey)
     const key = toKey(keyId)
+    // 두 키가 모두 같으면 같은 멤버다 — 멱등하게 기존 것을 돌려준다.
     const existing = this.members.get(key)
-    if (existing) {
-      // 같은 key id 에 다른 서명키가 오면 키 교체 시도다. 조용히 덮으면
-      // 사칭이 통과하므로 거부하고 사람에게 넘긴다.
-      if (!equal(existing.signPublicKey, member.signPublicKey)) {
+    if (existing) return existing
+
+    for (const m of this.members.values()) {
+      // 같은 KEM 키에 다른 서명키가 오면 키 교체 시도다. 조용히 별도
+      // 멤버로 넣으면 사칭이 통과하므로 거부하고 사람에게 넘긴다.
+      if (equal(m.kemPublicKey, member.kemPublicKey)) {
         throw new Error(
-          `key id ${toHex(keyId)} 는 이미 다른 서명키로 등록돼 있다 — 사람이 지문을 다시 대조해야 한다`,
+          `이미 다른 서명키로 등록된 KEM 공개키다: ${toHex(member.kemPublicKey)} — 사람이 지문을 다시 대조해야 한다`,
         )
       }
-      return existing
+      // 같은 불변식의 더 강한 형태. 사람이 대조하는 지문은 서명키에서만
+      // 나오므로(identity/fingerprint), 검증된 서명키에 KEM 키만 바꿔 단
+      // 항목은 신뢰된 지문을 그대로 띄우면서 본문은 공격자 KEM 키로 감싸게
+      // 만든다. 지문이 맞아 보이는 만큼 더 위험하다.
+      if (equal(m.signPublicKey, member.signPublicKey)) {
+        throw new Error(
+          `이미 다른 KEM 키로 등록된 서명키다: ${toHex(member.signPublicKey)} — 사람이 지문을 다시 대조해야 한다`,
+        )
+      }
     }
+
     if (this.members.size >= MAX_RECIPIENTS) {
       throw new Error(`멤버가 너무 많다 (상한 ${MAX_RECIPIENTS})`)
     }
@@ -167,12 +187,14 @@ export class Channel {
    * 나를 뺀 수신자 목록 — `seal()` 에 그대로 넘긴다.
    *
    * 자기 자신에게 보내지 않는 것은 에코 억제(§7)의 가장 아래층이다.
+   *
+   * 멤버를 그대로 넘긴다 — key id 가 두 공개키에서 나오므로(§10.12) 서명키를
+   * 떼어 내면 `seal()` 이 다른 key id 를 계산하고, 봉투는 아무도 열 수 없는
+   * 몫만 담게 된다. `ResolvedMember` 는 `Recipient` 를 구조적으로 만족한다.
    */
-  recipients(self: Uint8Array): { kemPublicKey: Uint8Array }[] {
+  recipients(self: Uint8Array): ResolvedMember[] {
     const me = toKey(self)
-    return [...this.members.values()]
-      .filter(m => toKey(m.keyId) !== me)
-      .map(m => ({ kemPublicKey: m.kemPublicKey }))
+    return [...this.members.values()].filter(m => toKey(m.keyId) !== me)
   }
 
   /**

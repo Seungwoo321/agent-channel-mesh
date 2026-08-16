@@ -7,15 +7,15 @@
  * 서술로 남기지 않고 실제로 확인한다.
  */
 import { test, expect, describe, beforeAll } from 'bun:test'
-import { createIdentity, type Identity } from '../src/identity/keys.ts'
-import { seal } from '../src/crypto/seal.ts'
-import { encode, decode } from '../src/crypto/envelope.ts'
-import { Channel } from '../src/channel/channel.ts'
-import { ReplayGuard } from '../src/crypto/replay.ts'
-import { receive } from '../src/crypto/receive.ts'
-import { open } from '../src/crypto/seal.ts'
-import { Relay, MAX_ENVELOPE_BYTES } from '../src/relay/relay.ts'
-import { MemoryStore, DEFAULT_TTL_MS } from '../src/relay/store.ts'
+import { createIdentity, type Identity } from '../src/identity/keys.js'
+import { seal } from '../src/crypto/seal.js'
+import { encode, decode } from '../src/crypto/envelope.js'
+import { Channel } from '../src/channel/channel.js'
+import { ReplayGuard } from '../src/crypto/replay.js'
+import { receive } from '../src/crypto/receive.js'
+import { open } from '../src/crypto/seal.js'
+import { Relay, MAX_ENVELOPE_BYTES } from '../src/relay/relay.js'
+import { MemoryStore, DEFAULT_TTL_MS } from '../src/relay/store.js'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -39,7 +39,10 @@ async function envelopeFor(recipients: Identity[], text: string, seq = 1n) {
   return encode(
     await seal({
       sender: alice,
-      recipients: recipients.map(r => ({ kemPublicKey: r.kemPublicKey })),
+      recipients: recipients.map(r => ({
+        kemPublicKey: r.kemPublicKey,
+        signPublicKey: r.signPublicKey,
+      })),
       channelTag: TAG,
       seq,
       plaintext: enc.encode(text),

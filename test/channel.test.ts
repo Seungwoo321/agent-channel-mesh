@@ -6,13 +6,13 @@
  * 각 층이 따로 통과하는 것으로는 그게 증명되지 않는다.
  */
 import { test, expect, describe, beforeAll } from 'bun:test'
-import { createIdentity, type Identity } from '../src/identity/keys.ts'
-import { Channel, deriveTag, CHANNEL_SECRET_BYTES } from '../src/channel/channel.ts'
-import { fingerprint } from '../src/identity/fingerprint.ts'
-import { seal } from '../src/crypto/seal.ts'
-import { encode, CHANNEL_TAG_BYTES } from '../src/crypto/envelope.ts'
-import { ReplayGuard } from '../src/crypto/replay.ts'
-import { receive } from '../src/crypto/receive.ts'
+import { createIdentity, type Identity } from '../src/identity/keys.js'
+import { Channel, deriveTag, CHANNEL_SECRET_BYTES } from '../src/channel/channel.js'
+import { fingerprint } from '../src/identity/fingerprint.js'
+import { seal } from '../src/crypto/seal.js'
+import { encode, CHANNEL_TAG_BYTES } from '../src/crypto/envelope.js'
+import { ReplayGuard } from '../src/crypto/replay.js'
+import { receive } from '../src/crypto/receive.js'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -126,13 +126,26 @@ describe('멤버 관리', () => {
     expect(ch.size).toBe(1)
   })
 
-  test('key id 는 같고 서명키가 다르면 거부한다 — 사칭 방지', () => {
-    // 조용히 덮어쓰면 키 교체 사칭이 통과한다. 사람에게 넘겨야 한다.
+  test('KEM 키는 같고 서명키가 다르면 거부한다 — 사칭 방지', () => {
+    // key id 가 두 키에서 나오므로(§10.12) 이 쌍은 더 이상 충돌하지 않는다.
+    // 그냥 두면 조용히 별도 멤버로 들어앉는다. 사람에게 넘겨야 한다.
     const ch = new Channel()
     ch.add(asMember(alice))
     expect(() =>
       ch.add({ signPublicKey: mallory.signPublicKey, kemPublicKey: alice.kemPublicKey }),
     ).toThrow(/지문을 다시 대조/)
+    expect(ch.size).toBe(1)
+  })
+
+  test('서명키는 같고 KEM 키가 다르면 거부한다 — 지문이 맞아 보이는 쪽', () => {
+    // 사람이 대조하는 지문은 서명키에서만 나온다. 이 항목을 허용하면
+    // 신뢰된 지문을 띄우면서 본문은 공격자 KEM 키로 감싸게 된다.
+    const ch = new Channel()
+    ch.add(asMember(alice))
+    expect(() =>
+      ch.add({ signPublicKey: alice.signPublicKey, kemPublicKey: mallory.kemPublicKey }),
+    ).toThrow(/지문을 다시 대조/)
+    expect(ch.size).toBe(1)
   })
 
   test('제거하면 목록에서 빠진다', () => {

@@ -6,9 +6,9 @@
  * 확인한다. 그게 재전송 방지의 근거이기 때문이다 (§10.5).
  */
 import { test, expect, describe, beforeAll } from 'bun:test'
-import { createIdentity, type Identity } from '../src/identity/keys.ts'
-import { seal, open, keyIdOf } from '../src/crypto/seal.ts'
-import { encode, decode, MAGIC, WRAPPED_KEY_BYTES } from '../src/crypto/envelope.ts'
+import { createIdentity, type Identity } from '../src/identity/keys.js'
+import { seal, open, keyIdOf } from '../src/crypto/seal.js'
+import { encode, decode, MAGIC, WRAPPED_KEY_BYTES } from '../src/crypto/envelope.js'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -26,7 +26,8 @@ beforeAll(async () => {
   ])
 })
 
-const to = (...ids: Identity[]) => ids.map(i => ({ kemPublicKey: i.kemPublicKey }))
+const to = (...ids: Identity[]) =>
+  ids.map(i => ({ kemPublicKey: i.kemPublicKey, signPublicKey: i.signPublicKey }))
 
 const equalBytes = (a: Uint8Array, b: Uint8Array) =>
   a.length === b.length && a.every((v, i) => v === b[i])
@@ -227,9 +228,9 @@ describe('신선도·유일성', () => {
     expect(env.header.nonce).toHaveLength(24)
   })
 
-  test('key id 는 KEM 공개키에서 나온다', async () => {
+  test('key id 는 두 공개키에서 나온다 — §10.12', async () => {
     const env = await sealTo([bob], 'x')
-    expect(env.keys[0]!.keyId).toEqual(keyIdOf(bob.kemPublicKey))
+    expect(env.keys[0]!.keyId).toEqual(keyIdOf(bob.kemPublicKey, bob.signPublicKey))
     expect(env.header.senderKeyId).toEqual(alice.keyId)
   })
 })
@@ -254,7 +255,7 @@ describe('전송 크기 — 문서와 일치', () => {
       const rs = await Promise.all(Array.from({ length: n }, () => createIdentity()))
       const env = await seal({
         sender: alice,
-        recipients: rs.map(r => ({ kemPublicKey: r.kemPublicKey })),
+        recipients: to(...rs),
         channelTag: TAG,
         seq: 1n,
         plaintext: body,

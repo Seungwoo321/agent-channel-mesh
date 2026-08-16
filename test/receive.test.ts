@@ -7,11 +7,11 @@
  * 정상 메시지를 막을 수 있으면 재전송 방지가 오히려 DoS 수단이 된다.
  */
 import { test, expect, describe, beforeAll } from 'bun:test'
-import { createIdentity, type Identity } from '../src/identity/keys.ts'
-import { seal } from '../src/crypto/seal.ts'
-import { encode } from '../src/crypto/envelope.ts'
-import { ReplayGuard } from '../src/crypto/replay.ts'
-import { receive } from '../src/crypto/receive.ts'
+import { createIdentity, type Identity } from '../src/identity/keys.js'
+import { seal } from '../src/crypto/seal.js'
+import { encode } from '../src/crypto/envelope.js'
+import { ReplayGuard } from '../src/crypto/replay.js'
+import { receive } from '../src/crypto/receive.js'
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -39,7 +39,7 @@ const equal = (a: Uint8Array, b: Uint8Array) =>
 async function fromAlice(text: string, seq: bigint, sender: Identity = alice) {
   return seal({
     sender,
-    recipients: [{ kemPublicKey: bob.kemPublicKey }],
+    recipients: [{ kemPublicKey: bob.kemPublicKey, signPublicKey: bob.signPublicKey }],
     channelTag: TAG,
     seq,
     plaintext: enc.encode(text),
@@ -92,7 +92,7 @@ describe('거부', () => {
     // seq 를 바꾸면 서명이 깨지므로, 같은 message id 로 새로 봉인한다.
     const resent = await seal({
       sender: alice,
-      recipients: [{ kemPublicKey: bob.kemPublicKey }],
+      recipients: [{ kemPublicKey: bob.kemPublicKey, signPublicKey: bob.signPublicKey }],
       channelTag: TAG,
       seq: 2n,
       plaintext: enc.encode('한 번만'),
@@ -123,7 +123,7 @@ describe('거부', () => {
     const g = new ReplayGuard()
     const env = await seal({
       sender: alice,
-      recipients: [{ kemPublicKey: mallory.kemPublicKey }],
+      recipients: [{ kemPublicKey: mallory.kemPublicKey, signPublicKey: mallory.signPublicKey }],
       channelTag: TAG,
       seq: 1n,
       plaintext: enc.encode('남의 대화'),
@@ -135,7 +135,7 @@ describe('거부', () => {
     const g = new ReplayGuard()
     const env = await seal({
       sender: alice,
-      recipients: [{ kemPublicKey: bob.kemPublicKey }],
+      recipients: [{ kemPublicKey: bob.kemPublicKey, signPublicKey: bob.signPublicKey }],
       channelTag: TAG,
       seq: 1n,
       plaintext: enc.encode('옛날 메시지'),
@@ -177,7 +177,7 @@ describe('상태 오염 방지 — 위조가 정상을 막지 못한다', () => 
     const g = new ReplayGuard()
     const env = await seal({
       sender: alice,
-      recipients: [{ kemPublicKey: mallory.kemPublicKey }],
+      recipients: [{ kemPublicKey: mallory.kemPublicKey, signPublicKey: mallory.signPublicKey }],
       channelTag: TAG,
       seq: 1n,
       plaintext: enc.encode('남의 대화'),
@@ -203,7 +203,7 @@ describe('검사 순서 — 비싼 연산 보호', () => {
     const g = new ReplayGuard()
     const env = await seal({
       sender: alice,
-      recipients: [{ kemPublicKey: mallory.kemPublicKey }],
+      recipients: [{ kemPublicKey: mallory.kemPublicKey, signPublicKey: mallory.signPublicKey }],
       channelTag: TAG,
       seq: 1n,
       plaintext: enc.encode('x'),

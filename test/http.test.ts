@@ -40,7 +40,7 @@ async function envelopeFor(text: string, seq = 1n) {
   return encode(
     await seal({
       sender: alice,
-      recipients: [{ kemPublicKey: bob.kemPublicKey }],
+      recipients: [{ kemPublicKey: bob.kemPublicKey, signPublicKey: bob.signPublicKey }],
       channelTag: TAG,
       seq,
       plaintext: enc.encode(text),

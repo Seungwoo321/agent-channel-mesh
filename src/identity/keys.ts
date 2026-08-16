@@ -11,13 +11,16 @@ import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { randomBytes } from '@noble/hashes/utils.js'
 import { DhkemX25519HkdfSha256 } from '@hpke/dhkem-x25519'
-import { fingerprint, format, toWords } from './fingerprint.ts'
+import { fingerprint, format, toWords } from './fingerprint.js'
+// 공개값 연산은 잎 모듈이 갖는다 — 릴레이가 HPKE·워드리스트 없이 검증하기 위함(verify.ts 참조).
+import { keyIdOf } from './verify.js'
 
 const kem = new DhkemX25519HkdfSha256()
 
 export const SEED_BYTES = 32
-/** 봉투의 발신자 key id (§10.6) */
-export const KEY_ID_BYTES = 8
+
+/** key id 파생과 서명 검증은 `./verify.ts` 가 갖는다. 기존 import 경로를 위해 여기서 재수출한다. */
+export { KEY_ID_BYTES, keyIdOf, verify } from './verify.js'
 
 /** 시드에서 두 키를 파생할 때의 도메인 분리 라벨. 절대 재사용하지 않는다. */
 const INFO_SIGN = new TextEncoder().encode('agent-channel-mesh/v1/identity/ed25519')
@@ -32,7 +35,7 @@ export interface Identity {
   readonly kemPrivateKey: CryptoKey
   /** 지문 16B — 서명 공개키 기준 (§9) */
   readonly fingerprint: Uint8Array
-  /** 봉투 라우팅용 8B. 지문의 축약이 아니라 KEM 공개키에서 따로 뽑는다. */
+  /** 봉투 라우팅용 8B. 지문의 축약이 아니라 두 공개키에서 따로 뽑는다. */
   readonly keyId: Uint8Array
 }
 
@@ -67,7 +70,7 @@ export async function deriveIdentity(seed: Uint8Array): Promise<Identity> {
     kemPublicKey,
     kemPrivateKey: kp.privateKey,
     fingerprint: fingerprint(signPublicKey),
-    keyId: sha256(kemPublicKey).slice(0, KEY_ID_BYTES),
+    keyId: keyIdOf(kemPublicKey, signPublicKey),
   }
 }
 
@@ -79,19 +82,6 @@ export async function createIdentity(): Promise<Identity> {
 /** 봉투 서명 (§10.2 — HPKE Auth 모드가 아닌 분리 서명) */
 export function sign(id: Identity, message: Uint8Array): Uint8Array {
   return ed25519.sign(message, id.signPrivateKey)
-}
-
-/** 서명 검증. 예외를 던지지 않고 boolean 을 준다. */
-export function verify(
-  signPublicKey: Uint8Array,
-  message: Uint8Array,
-  signature: Uint8Array,
-): boolean {
-  try {
-    return ed25519.verify(signature, message, signPublicKey)
-  } catch {
-    return false
-  }
 }
 
 /** 사람이 대조할 지문 표현 (§9) */

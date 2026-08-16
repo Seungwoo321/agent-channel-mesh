@@ -11,10 +11,9 @@ import { CipherSuite, HkdfSha256 } from '@hpke/core'
 import { DhkemX25519HkdfSha256 } from '@hpke/dhkem-x25519'
 import { Chacha20Poly1305 } from '@hpke/chacha20poly1305'
 import { xchacha20poly1305 } from '@noble/ciphers/chacha.js'
-import { sha256 } from '@noble/hashes/sha2.js'
 import { randomBytes } from '@noble/hashes/utils.js'
-import type { Identity } from '../identity/keys.ts'
-import { sign, verify, KEY_ID_BYTES } from '../identity/keys.ts'
+import type { Identity } from '../identity/keys.js'
+import { sign, verify, keyIdOf, KEY_ID_BYTES } from '../identity/keys.js'
 import {
   type Envelope,
   type Header,
@@ -27,7 +26,7 @@ import {
   WRAPPED_KEY_BYTES,
   headerBytes,
   signingBytes,
-} from './envelope.ts'
+} from './envelope.js'
 
 /**
  * HPKE Base 모드 — DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 / ChaCha20-Poly1305
@@ -44,14 +43,24 @@ const suite = new CipherSuite({
 const CONTENT_KEY_BYTES = 32
 const HPKE_INFO = new TextEncoder().encode('agent-channel-mesh/v1/wrap')
 
-/** 수신자 지정 — KEM 공개키와 그 key id */
+/**
+ * key id 파생은 신원 모듈이 단독으로 소유한다 (§10.12).
+ *
+ * 여기서 다시 구현하면 두 벌이 갈라질 수 있고, 갈라지는 순간 릴레이의
+ * 소유권 검사가 통과하는 봉투를 아무도 열지 못한다. 공개 API 경로를
+ * 유지하기 위해 재수출만 한다.
+ */
+export { keyIdOf }
+
+/** 수신자 지정 — 콘텐츠 키를 감쌀 KEM 공개키와, key id 에 함께 묶이는 서명 공개키 */
 export interface Recipient {
   readonly kemPublicKey: Uint8Array
-}
-
-/** key id 는 KEM 공개키에서 뽑는다. 지문의 축약이 아니다. */
-export function keyIdOf(kemPublicKey: Uint8Array): Uint8Array {
-  return sha256(kemPublicKey).slice(0, KEY_ID_BYTES)
+  /**
+   * 수신자의 Ed25519 서명 공개키. key id 가 두 키에서 파생되므로(§10.12)
+   * 선택 항목일 수 없다 — 빠뜨리면 조용히 다른 key id 가 나오고, 메시지는
+   * 아무도 드레인하지 않는 큐로 간다.
+   */
+  readonly signPublicKey: Uint8Array
 }
 
 export interface SealInput {
@@ -112,7 +121,7 @@ export async function seal(input: SealInput): Promise<Envelope> {
     const wrapped = new Uint8Array(WRAPPED_KEY_BYTES)
     wrapped.set(enc, 0)
     wrapped.set(sealed, enc.length)
-    keys.push({ keyId: keyIdOf(r.kemPublicKey), wrapped })
+    keys.push({ keyId: keyIdOf(r.kemPublicKey, r.signPublicKey), wrapped })
   }
 
   contentKey.fill(0)

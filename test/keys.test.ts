@@ -12,9 +12,10 @@ import {
   sign,
   verify,
   fingerprintWords,
+  keyIdOf,
   SEED_BYTES,
   KEY_ID_BYTES,
-} from '../src/identity/keys.ts'
+} from '../src/identity/keys.js'
 
 describe('신원 파생', () => {
   test('시드는 32바이트다', () => {
@@ -59,6 +60,39 @@ describe('신원 파생', () => {
   test('지문은 16단어로 표시된다', async () => {
     const id = await createIdentity()
     expect(fingerprintWords(id)).toHaveLength(16)
+  })
+})
+
+describe('key id 파생 — §10.12', () => {
+  // 서명된 수신함 폴링의 소유권 검사는 전적으로 이 성질에 기댄다.
+  // 한쪽 키만 바꿔도 key id 가 달라져야, 피해자의 KEM 공개키에 공격자가
+  // 자기 서명 키쌍을 붙여 제시하는 경로가 막힌다.
+  test('KEM 키가 바뀌면 key id 가 바뀐다', async () => {
+    const a = await createIdentity()
+    const b = await createIdentity()
+    expect(keyIdOf(a.kemPublicKey, a.signPublicKey)).not.toEqual(
+      keyIdOf(b.kemPublicKey, a.signPublicKey),
+    )
+  })
+
+  test('서명키가 바뀌면 key id 가 바뀐다 — 이 한 줄이 사칭을 막는다', async () => {
+    const a = await createIdentity()
+    const b = await createIdentity()
+    expect(keyIdOf(a.kemPublicKey, a.signPublicKey)).not.toEqual(
+      keyIdOf(a.kemPublicKey, b.signPublicKey),
+    )
+  })
+
+  test('신원의 key id 와 같은 값을 준다', async () => {
+    const id = await createIdentity()
+    expect(keyIdOf(id.kemPublicKey, id.signPublicKey)).toEqual(id.keyId)
+  })
+
+  test('8바이트다', async () => {
+    const a = await createIdentity()
+    const b = await createIdentity()
+    expect(keyIdOf(a.kemPublicKey, a.signPublicKey)).toHaveLength(KEY_ID_BYTES)
+    expect(keyIdOf(a.kemPublicKey, b.signPublicKey)).toHaveLength(8)
   })
 })
 
