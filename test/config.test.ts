@@ -5,8 +5,8 @@
  * 그리고 시드가 든 파일이 넓은 권한으로 읽히지 않는 것.
  */
 import { test, expect, describe, beforeAll } from 'bun:test'
-import { createIdentity, type Identity } from '../src/identity/keys.ts'
-import { toHex } from '../src/identity/fingerprint.ts'
+import { createIdentity, type Identity } from '../src/identity/keys.js'
+import { toHex } from '../src/identity/fingerprint.js'
 import {
   loadConfig,
   buildNode,
@@ -14,9 +14,9 @@ import {
   fromHex,
   expandHome,
   type Config,
-} from '../src/adapter/config.ts'
-import { init, whoami, skeleton, newChannelSecret } from '../src/adapter/onboard.ts'
-import { parseArgs } from '../src/adapter/bin.ts'
+} from '../src/adapter/config.js'
+import { init, whoami, skeleton, newChannelSecret } from '../src/adapter/onboard.js'
+import { parseArgs } from '../src/adapter/bin.js'
 
 let alice: Identity
 let bob: Identity

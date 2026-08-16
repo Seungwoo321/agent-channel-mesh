@@ -17,10 +17,10 @@ export {
   type ToolSpec,
   type ToolResult,
   type HandlerContext,
-} from './tools.ts'
+} from './tools.js'
 
 // 수신함 — 능동 주입이 없는 에이전트의 전달 방식
-export { Inbox, DEFAULT_CAPACITY, type InboxItem, type InboxOptions } from './inbox.ts'
+export { Inbox, DEFAULT_CAPACITY, type InboxItem, type InboxOptions } from './inbox.js'
 
 // Claude Code — 능동 주입
 export {
@@ -30,10 +30,10 @@ export {
   TOOLS,
   type Notify,
   type ClaudeAdapterOptions,
-} from './claude.ts'
+} from './claude.js'
 
 // 프로세스로 띄우기
-export { serve, SERVER_NAME, SERVER_VERSION, type Delivery, type ServeOptions } from './server.ts'
+export { serve, SERVER_NAME, SERVER_VERSION, type Delivery, type ServeOptions } from './server.js'
 
 // 설정 — 어댑터는 대화창이 없어서 파일이 유일한 입력이다
 export {
@@ -47,7 +47,7 @@ export {
   type ChannelConfig,
   type MemberConfig,
   type LoadOptions,
-} from './config.ts'
+} from './config.js'
 
 // 온보딩 — 손으로 만들 수 없는 값을 만들어 준다
 export {
@@ -58,7 +58,7 @@ export {
   hex,
   type InitResult,
   type InitOptions,
-} from './onboard.ts'
+} from './onboard.js'
 
 // 실행 진입점
-export { main, parseArgs, type Args, type Command } from './bin.ts'
+export { main, parseArgs, type Args, type Command } from './bin.js'

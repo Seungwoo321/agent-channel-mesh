@@ -11,9 +11,9 @@
  * 표현하지 못했다. 채널은 대화 상대가 아니라 **집합**이므로(§5) 보내는 대상은
  * 채널이지 회신 대상이 아니다.
  */
-import type { MeshNode } from '../node/node.ts'
-import type { Inbox } from './inbox.ts'
-import { toHex } from '../identity/fingerprint.ts'
+import type { MeshNode } from '../node/node.js'
+import type { Inbox } from './inbox.js'
+import { toHex } from '../identity/fingerprint.js'
 
 /** MCP `tools/list` 에 그대로 실을 수 있는 형태. */
 export interface ToolSpec {

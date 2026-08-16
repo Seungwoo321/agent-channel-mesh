@@ -5,8 +5,8 @@
  * seq 가 윈도우를 한 바퀴 넘을 때만 깨진다. 그 경계가 이 파일의 본론이다.
  */
 import { test, expect, describe } from 'bun:test'
-import { ReplayGuard, WINDOW_BITS, FRESHNESS_MS } from '../src/crypto/replay.ts'
-import type { Header } from '../src/crypto/envelope.ts'
+import { ReplayGuard, WINDOW_BITS, FRESHNESS_MS } from '../src/crypto/replay.js'
+import type { Header } from '../src/crypto/envelope.js'
 
 const SENDER_A = new Uint8Array(8).fill(0xaa)
 const SENDER_B = new Uint8Array(8).fill(0xbb)

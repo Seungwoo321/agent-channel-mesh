@@ -14,11 +14,11 @@
  * 채널 비밀 교환 자체는 아직 사람이 한다. 그것을 자동화하려면 초대 프로토콜이
  * 필요하고, 그건 별도 설계다 — 여기서는 "손으로 할 수 있게" 까지만 한다.
  */
-import { deriveIdentity, generateSeed, type Identity } from '../identity/keys.ts'
-import { format } from '../identity/fingerprint.ts'
-import { CHANNEL_SECRET_BYTES } from '../channel/channel.ts'
+import { deriveIdentity, generateSeed, type Identity } from '../identity/keys.js'
+import { format } from '../identity/fingerprint.js'
+import { CHANNEL_SECRET_BYTES } from '../channel/channel.js'
 import { randomBytes } from '@noble/hashes/utils.js'
-import { expandHome, type Config } from './config.ts'
+import { expandHome, type Config } from './config.js'
 
 /** 바이트를 hex 로. 설정 파일이 쓰는 형식이다 — 지문 표기(§9)와 다르다. */
 export function hex(bytes: Uint8Array): string {

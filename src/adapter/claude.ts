@@ -15,8 +15,8 @@
  * 제약도 스파이크에서 확인됐다 — 채널은 stdio 서브프로세스다. 순수
  * 서버리스만으로는 세션에 닿을 수 없고, 로컬 프로세스가 반드시 존재한다.
  */
-import type { MeshNode, Inbound, Dropped } from '../node/node.ts'
-import { SEND_TOOL, CHANNELS_TOOL, callTool, type ToolSpec } from './tools.ts'
+import type { MeshNode, Inbound, Dropped } from '../node/node.js'
+import { SEND_TOOL, CHANNELS_TOOL, callTool, type ToolSpec } from './tools.js'
 
 /**
  * 세션에 알림을 보내는 함수.

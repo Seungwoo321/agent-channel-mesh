@@ -6,7 +6,7 @@
  * 벡터 없이는 그럴듯하게 틀린 목록을 넣고도 모른다.
  */
 import { test, expect, describe } from 'bun:test'
-import { EVEN, ODD } from '../src/identity/wordlist.ts'
+import { EVEN, ODD } from '../src/identity/wordlist.js'
 import {
   fingerprint,
   toWords,
@@ -14,7 +14,7 @@ import {
   toHex,
   format,
   FINGERPRINT_BYTES,
-} from '../src/identity/fingerprint.ts'
+} from '../src/identity/fingerprint.js'
 
 describe('워드 리스트 — 정본 대조', () => {
   test('Zimmermann 문서의 벡터와 일치한다', () => {

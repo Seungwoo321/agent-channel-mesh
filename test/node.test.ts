@@ -6,9 +6,9 @@
  * 것을 노드가 대신 지키는가"** 다 — 검사 순서, 발화 제어, 채널 격리.
  */
 import { test, expect, describe, beforeAll } from 'bun:test'
-import { createIdentity, type Identity } from '../src/identity/keys.ts'
-import { Channel } from '../src/channel/channel.ts'
-import { MeshNode, type Inbound } from '../src/node/node.ts'
+import { createIdentity, type Identity } from '../src/identity/keys.js'
+import { Channel } from '../src/channel/channel.js'
+import { MeshNode, type Inbound } from '../src/node/node.js'
 
 let alice: Identity
 let bob: Identity

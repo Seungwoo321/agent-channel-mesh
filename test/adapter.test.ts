@@ -9,12 +9,12 @@
  * 본다: 모델이 툴을 직접 부르는 길이 예산 우회로가 되면 §7 이 무너진다.
  */
 import { test, expect, describe, beforeAll } from 'bun:test'
-import { createIdentity, type Identity } from '../src/identity/keys.ts'
-import { Channel } from '../src/channel/channel.ts'
-import { MeshNode, type Inbound } from '../src/node/node.ts'
-import { Inbox } from '../src/adapter/inbox.ts'
-import { callTool } from '../src/adapter/tools.ts'
-import { ClaudeAdapter, CAPABILITIES, INSTRUCTIONS } from '../src/adapter/claude.ts'
+import { createIdentity, type Identity } from '../src/identity/keys.js'
+import { Channel } from '../src/channel/channel.js'
+import { MeshNode, type Inbound } from '../src/node/node.js'
+import { Inbox } from '../src/adapter/inbox.js'
+import { callTool } from '../src/adapter/tools.js'
+import { ClaudeAdapter, CAPABILITIES, INSTRUCTIONS } from '../src/adapter/claude.js'
 
 let alice: Identity
 let bob: Identity

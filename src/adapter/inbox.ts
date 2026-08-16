@@ -12,7 +12,7 @@
  * 이 파일에 에이전트 고유 코드가 없다는 점이 중요하다 — Codex 든 다른
  * 무엇이든 같은 수신함을 쓴다. 갈리는 것은 이걸 어떤 툴로 노출하느냐뿐이다.
  */
-import type { Inbound } from '../node/node.ts'
+import type { Inbound } from '../node/node.js'
 
 /** 수신함 상한. 넘으면 오래된 것부터 버린다. */
 export const DEFAULT_CAPACITY = 500

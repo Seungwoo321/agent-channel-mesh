@@ -9,7 +9,7 @@
  * 잘라낸 지문을 만들지 않는다 — 16비트 접두는 8초면 갈아 맞춘다.
  */
 import { sha256 } from '@noble/hashes/sha2.js'
-import { EVEN, ODD } from './wordlist.ts'
+import { EVEN, ODD } from './wordlist.js'
 
 /** 지문 길이. 줄이지 않는다 (§9). */
 export const FINGERPRINT_BYTES = 16

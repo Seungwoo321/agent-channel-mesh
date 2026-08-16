@@ -10,7 +10,7 @@ import {
   SpeechControl,
   DEFAULT_MAX_HOPS,
   DEFAULT_MESSAGE_BUDGET,
-} from '../src/channel/speech.ts'
+} from '../src/channel/speech.js'
 
 const ME = new Uint8Array(8).fill(0x11)
 const OTHER = new Uint8Array(8).fill(0x22)

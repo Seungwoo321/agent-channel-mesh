@@ -13,10 +13,10 @@
  *
  * stdout 은 MCP 프레이밍이 쓴다. 사람에게 하는 말은 전부 stderr 로 나간다.
  */
-import { loadConfig, buildNode, DEFAULT_CONFIG_PATH } from './config.ts'
-import { serve, type Delivery } from './server.ts'
-import { init, whoami, newChannelSecret } from './onboard.ts'
-import { format } from '../identity/fingerprint.ts'
+import { loadConfig, buildNode, DEFAULT_CONFIG_PATH } from './config.js'
+import { serve, type Delivery } from './server.js'
+import { init, whoami, newChannelSecret } from './onboard.js'
+import { format } from '../identity/fingerprint.js'
 
 /** 무엇을 하러 왔는가. `serve` 만 전달 방식을 요구한다. */
 export type Command = 'serve' | 'init' | 'whoami'

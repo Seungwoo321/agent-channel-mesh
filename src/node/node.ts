@@ -11,14 +11,14 @@
  * 여기에 에이전트 고유 코드는 하나도 없다. `claude/channel` 은 이 경계를
  * 넘지 않는다 (CLAUDE.md「코어와 어댑터 경계」).
  */
-import type { Identity } from '../identity/keys.ts'
-import { seal } from '../crypto/seal.ts'
-import { encode, peekChannelTag } from '../crypto/envelope.ts'
-import { receive, type RejectReason } from '../crypto/receive.ts'
-import { ReplayGuard } from '../crypto/replay.ts'
-import { Channel } from '../channel/channel.ts'
-import { SpeechControl, type Decision, type SpeechOptions } from '../channel/speech.ts'
-import { RelayClient } from '../relay/client.ts'
+import type { Identity } from '../identity/keys.js'
+import { seal } from '../crypto/seal.js'
+import { encode, peekChannelTag } from '../crypto/envelope.js'
+import { receive, type RejectReason } from '../crypto/receive.js'
+import { ReplayGuard } from '../crypto/replay.js'
+import { Channel } from '../channel/channel.js'
+import { SpeechControl, type Decision, type SpeechOptions } from '../channel/speech.js'
+import { RelayClient } from '../relay/client.js'
 
 /** 채널에 붙일 때 주는 정책. 채널마다 다를 수 있다. */
 export interface JoinOptions {
