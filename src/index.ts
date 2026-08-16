@@ -18,7 +18,7 @@ export {
   SEED_BYTES,
   KEY_ID_BYTES,
   type Identity,
-} from './identity/keys.ts'
+} from './identity/keys.js'
 
 // 지문 — 사람이 대조하는 128비트 (§9)
 export {
@@ -28,7 +28,7 @@ export {
   toHex,
   format,
   FINGERPRINT_BYTES,
-} from './identity/fingerprint.ts'
+} from './identity/fingerprint.js'
 
 // 봉투 — 전송 형식 (§10.6)
 export {
@@ -47,10 +47,10 @@ export {
   type Envelope,
   type Header,
   type WrappedKey,
-} from './crypto/envelope.ts'
+} from './crypto/envelope.js'
 
 // 봉인·개봉 — HPKE 래핑 + XChaCha20-Poly1305 본문 (§10.2 · §10.3)
-export { seal, open, keyIdOf, type SealInput, type OpenInput, type Recipient } from './crypto/seal.ts'
+export { seal, open, keyIdOf, type SealInput, type OpenInput, type Recipient } from './crypto/seal.js'
 
 // 재전송 방지 (§10.5)
 export {
@@ -60,7 +60,7 @@ export {
   type Verdict,
   type Reason,
   type GuardOptions,
-} from './crypto/replay.ts'
+} from './crypto/replay.js'
 
 /**
  * 수신 경로 (§10.5).
@@ -69,7 +69,7 @@ export {
  * 모든 검사가 통과하고, 재전송 폭주가 비대칭 연산을 소모하지 않는다는
  * 성질만 조용히 사라진다.
  */
-export { receive, type Received, type ReceiveInput, type RejectReason } from './crypto/receive.ts'
+export { receive, type Received, type ReceiveInput, type RejectReason } from './crypto/receive.js'
 
 // 채널 — 참여 노드의 집합 (§5 · §8 · §10.11)
 export {
@@ -79,7 +79,7 @@ export {
   type Member,
   type ResolvedMember,
   type ChannelInit,
-} from './channel/channel.ts'
+} from './channel/channel.js'
 
 // 발화 제어 — 종료 조건 없는 대화를 만들지 않는다 (§7)
 export {
@@ -90,11 +90,24 @@ export {
   type Incoming,
   type SilenceReason,
   type SpeechOptions,
-} from './channel/speech.ts'
+} from './channel/speech.js'
 
 // 릴레이 — 서버 쪽 (§10.7)
-export { Relay, MAX_ENVELOPE_BYTES, type PostResult, type RelayOptions } from './relay/relay.ts'
-export { MemoryStore, DEFAULT_TTL_MS, type Store, type Stored } from './relay/store.ts'
+export { Relay, MAX_ENVELOPE_BYTES, type PostResult, type RelayOptions } from './relay/relay.js'
+export { MemoryStore, DEFAULT_TTL_MS, DEFAULT_MAX_QUEUE, type Store, type Stored } from './relay/store.js'
+// 서버리스 저장소. MemoryStore 는 인스턴스마다 메모리가 갈려 쓸 수 없다 (§10.7).
+export {
+  UpstashStore,
+  UpstashError,
+  fromEnv as upstashFromEnv,
+  type UpstashStoreOptions,
+} from './relay/upstash.js'
+export {
+  start as startRelay,
+  parseArgs as parseRelayArgs,
+  DEFAULT_PORT,
+  type ServeArgs,
+} from './relay/serve.js'
 export {
   createHandler,
   fromBase64,
@@ -103,7 +116,7 @@ export {
   type FetchBody,
   type ErrorBody,
   type HealthBody,
-} from './relay/http.ts'
+} from './relay/http.js'
 
 // 릴레이 — 클라이언트 쪽. 코어가 암호문을 주고받는 통로다.
 export {
@@ -111,7 +124,7 @@ export {
   RelayError,
   DEFAULT_POLL_MS,
   type ClientOptions,
-} from './relay/client.ts'
+} from './relay/client.js'
 
 /**
  * 노드 — 코어의 조립체 (§4).
@@ -126,4 +139,4 @@ export {
   type DropReason,
   type JoinOptions,
   type NodeOptions,
-} from './node/node.ts'
+} from './node/node.js'

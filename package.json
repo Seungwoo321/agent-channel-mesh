@@ -14,6 +14,7 @@
   },
   "scripts": {
     "adapter": "bun run src/adapter/bin.ts",
+    "relay": "bun run src/server.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

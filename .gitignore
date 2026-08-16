@@ -43,8 +43,12 @@ CLAUDE.local.md
 # 임시 파일
 tmp/
 
+# Vercel 링크 정보 (프로젝트·조직 id)
+.vercel/
+
 # 어댑터 설정 — 시드(개인키)와 채널 비밀이 들어 있다.
 # 이 파일 하나면 과거·미래 메시지를 전부 읽을 수 있으므로 절대 커밋하지 않는다.
 config.json
 *.config.json
 .agent-channel-mesh/
+.env*.local

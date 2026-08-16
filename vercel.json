@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "bun",
+  "bunVersion": "1.x",
+  "crons": [
+    {
+      "path": "/keepalive",
+      "schedule": "0 21 * * 0"
+    }
+  ]
+}
