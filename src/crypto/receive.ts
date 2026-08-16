@@ -10,11 +10,11 @@
  *
  * 순서: 구조 → 서명 → 신선도·seq·dedup → 비대칭 언랩 → 본문 복호.
  */
-import type { Identity } from '../identity/keys.ts'
-import { verify } from '../identity/keys.ts'
-import { type Envelope, decode, signingBytes } from './envelope.ts'
-import { open } from './seal.ts'
-import type { ReplayGuard, Reason } from './replay.ts'
+import type { Identity } from '../identity/keys.js'
+import { verify } from '../identity/keys.js'
+import { type Envelope, decode, signingBytes } from './envelope.js'
+import { open } from './seal.js'
+import type { ReplayGuard, Reason } from './replay.js'
 
 /** 거부 사유. 재전송 사유에 서명·구조·발신자 미상을 더한 것. */
 export type RejectReason = Reason | 'malformed' | 'signature' | 'unknown-sender' | 'not-recipient'
@@ -60,7 +60,7 @@ export async function receive(input: ReceiveInput): Promise<Received> {
   // 2. 발신자를 아는가. 조회는 해시 한 번이다.
   const senderKey = lookupSender(header.senderKeyId)
   if (!senderKey) {
-    return no('unknown-sender', `발신자 ${hex(header.senderKeyId)} 를 모른다`)
+    return no('unknown-sender', `모르는 발신자다: ${hex(header.senderKeyId)}`)
   }
 
   // 3. 서명 — 대칭 연산. 여기를 통과해야 헤더 값을 믿고 상태를 갱신한다.

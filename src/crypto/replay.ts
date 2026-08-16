@@ -12,7 +12,7 @@
  * AAD 결속(§10.5 1항) 덕분에 헤더의 seq·timestamp 는 위조하면 나중에
  * 복호화가 깨지므로, 이 싼 검사를 먼저 신뢰해도 된다.
  */
-import type { Header } from './envelope.ts'
+import type { Header } from './envelope.js'
 
 /** 슬라이딩 윈도우 폭. IPsec 권고(RFC 4303 §3.4.3)와 같은 1024비트. */
 export const WINDOW_BITS = 1024
@@ -56,9 +56,12 @@ class Window {
 
     const behind = this.high - seq
     if (behind >= BigInt(WINDOW_BITS)) {
-      return no('window', `seq ${seq} 가 윈도우 밖이다 (최신 ${this.high}, 폭 ${WINDOW_BITS})`)
+      return no(
+        'window',
+        `윈도우 밖으로 밀려난 seq 다: ${seq} (최신 ${this.high}, 폭 ${WINDOW_BITS})`,
+      )
     }
-    if (this.get(seq)) return no('replayed', `seq ${seq} 는 이미 받았다`)
+    if (this.get(seq)) return no('replayed', `이미 받은 seq 다: ${seq}`)
     return YES
   }
 
@@ -146,7 +149,7 @@ export class ReplayGuard {
     if (!seq.ok) return seq
 
     const id = hex(header.messageId)
-    if (this.seen.has(id)) return no('duplicate', `message id ${id} 는 이미 받았다`)
+    if (this.seen.has(id)) return no('duplicate', `이미 받은 message id 다: ${id}`)
 
     // 여기서부터 상태를 바꾼다. 위의 어느 검사든 실패하면 아무것도 안 바뀐다.
     window.accept(header.seq)
@@ -164,7 +167,7 @@ export class ReplayGuard {
     const seq = window ? window.check(header.seq) : YES
     if (!seq.ok) return seq
     const id = hex(header.messageId)
-    return this.seen.has(id) ? no('duplicate', `message id ${id} 는 이미 받았다`) : YES
+    return this.seen.has(id) ? no('duplicate', `이미 받은 message id 다: ${id}`) : YES
   }
 
   /** 추적 중인 발신자 수. 진단용. */

@@ -62,9 +62,41 @@ export interface Envelope {
   readonly signature: Uint8Array
 }
 
+/**
+ * 마지막 글자에 종성(받침)이 있는가 — 조사 선택이 전부 여기에 달렸다.
+ *
+ * 한글 음절은 U+AC00~U+D7A3 에 정렬돼 있어 `(코드포인트 - 0xAC00) % 28 === 0` 이면 종성이 없다.
+ * 한글이 아니면 받침이 있는 쪽으로 둔다 — 어떤 입력이 와도 문자열을 돌려준다.
+ *
+ * 판정은 이 함수 하나뿐이다. 조사가 늘어도 규칙을 복제하지 않는다.
+ */
+function hasFinalConsonant(word: string): boolean {
+  const last = word.codePointAt(word.length - 1)
+  const isHangulSyllable = last !== undefined && last >= 0xac00 && last <= 0xd7a3
+  return !isHangulSyllable || (last - 0xac00) % 28 !== 0
+}
+
+/** 목적격 조사를 붙인다 — 받침 있으면 '을', 없으면 '를'. */
+function withObjectParticle(word: string): string {
+  return `${word}${hasFinalConsonant(word) ? '을' : '를'}`
+}
+
+
+/** 잘린 봉투 오류 — 문장 조립을 한 곳에 모은다. */
+function truncated(what: string): Error {
+  return new Error(`봉투가 잘렸다 — ${withObjectParticle(what)} 읽을 수 없다`)
+}
+
+/**
+ * `name` 뒤에 조사를 붙이지 않는다 — 조사는 고정 명사 '길이' 가 받는다.
+ *
+ * 이름이 'nonce'·'key id' 처럼 로마자로 끝나면 조사 선택에 필요한 발음을
+ * 문자열에서 알 수 없다(논스·아이디는 받침이 없고, 'ping' 같은 것은 있다).
+ * 표를 만들면 절반이 틀리므로, 조사가 변수 뒤에 오지 않게 문장을 짠다.
+ */
 function checkLength(name: string, value: Uint8Array, want: number): void {
   if (value.length !== want) {
-    throw new Error(`${name} 은 ${want}바이트여야 한다 (받은 값: ${value.length})`)
+    throw new Error(`${name} 길이는 ${want}바이트여야 한다 (받은 값: ${value.length})`)
   }
 }
 
@@ -164,7 +196,7 @@ export function encode(env: Envelope): Uint8Array {
  */
 export function decode(buf: Uint8Array): Envelope {
   const need = (n: number, what: string) => {
-    if (buf.length < n) throw new Error(`봉투가 잘렸다 — ${what} 을 읽을 수 없다`)
+    if (buf.length < n) throw truncated(what)
   }
   need(HEADER_FIXED_BYTES + 4 + SIGNATURE_BYTES, '헤더')
 
@@ -197,7 +229,7 @@ export function decode(buf: Uint8Array): Envelope {
   }
 
   const bodyLen = buf.length - off - SIGNATURE_BYTES
-  if (bodyLen < 0) throw new Error('봉투가 잘렸다 — 본문을 읽을 수 없다')
+  if (bodyLen < 0) throw truncated('본문')
   if (bodyLen > MAX_BODY_BYTES) throw new Error(`본문이 너무 크다 (${bodyLen}B)`)
   const body = take(bodyLen)
   const signature = take(SIGNATURE_BYTES)
