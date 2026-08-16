@@ -15,6 +15,7 @@ import { deriveIdentity, type Identity } from '../identity/keys.js'
 import { Channel } from '../channel/channel.js'
 import { MeshNode } from '../node/node.js'
 import { RelayClient } from '../relay/client.js'
+import type { Axis } from '../store/store.js'
 
 /** 기본 설정 위치. `ACM_CONFIG` 로 덮어쓴다. */
 export const DEFAULT_CONFIG_PATH = '~/.agent-channel-mesh/config.json'
@@ -40,6 +41,13 @@ export interface ChannelConfig {
   readonly mentions?: readonly string[]
   readonly maxHops?: number
   readonly messageBudget?: number
+  /**
+   * 이 채널이 남이냐 내 다른 세션이냐 (§6.4).
+   *
+   * 생략하면 `external` 이다. 안전한 쪽으로 기운다 — 내부를 외부로 잘못
+   * 표시하면 홉 제한이 더 세게 걸릴 뿐이지만, 반대는 §7 을 우회시킨다.
+   */
+  readonly axis?: Axis
 }
 
 export interface Config {
@@ -125,6 +133,16 @@ export function validate(raw: unknown): Config {
     const ch = c as Record<string, unknown>
     if (typeof ch.secret !== 'string') throw new Error(`channels[${i}].secret 이 없다 (32바이트 hex)`)
     fromHex(ch.secret, 32)
+    // 축은 선택이지만, 오타는 조용히 넘기지 않는다 — 'internel' 이 통과하면
+    // 그 채널은 외부로 떨어지고 사용자는 내부라고 믿는다 (§6.4).
+    if (
+      ch.axis !== undefined &&
+      ch.axis !== 'external' &&
+      ch.axis !== 'internal' &&
+      ch.axis !== 'local'
+    ) {
+      throw new Error(`channels[${i}].axis 는 external·internal·local 중 하나다`)
+    }
     if (!Array.isArray(ch.members)) throw new Error(`channels[${i}].members 는 배열이어야 한다`)
     ch.members.forEach((m, j) => {
       const mm = m as Record<string, unknown>
@@ -166,6 +184,7 @@ export async function buildNode(config: Config): Promise<{ node: MeshNode; ident
       mentions: c.mentions,
       maxHops: c.maxHops,
       messageBudget: c.messageBudget,
+      axis: c.axis,
     })
   }
 

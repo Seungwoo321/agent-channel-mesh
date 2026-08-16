@@ -19,6 +19,15 @@ import { ReplayGuard } from '../crypto/replay.js'
 import { Channel } from '../channel/channel.js'
 import { SpeechControl, type Decision, type SpeechOptions } from '../channel/speech.js'
 import { RelayClient } from '../relay/client.js'
+import type { Axis } from '../store/store.js'
+
+/**
+ * 축을 안 정했을 때의 기본값 (§6.4).
+ *
+ * 안전한 쪽으로 기운다 — 내부를 외부로 잘못 표시하면 홉 제한이 더 세게 걸릴
+ * 뿐이지만, 반대는 §7 발화 제어를 우회시킨다.
+ */
+const DEFAULT_AXIS: Axis = 'external'
 
 /** 채널에 붙일 때 주는 정책. 채널마다 다를 수 있다. */
 export interface JoinOptions {
@@ -26,6 +35,8 @@ export interface JoinOptions {
   readonly mentions?: readonly string[]
   readonly maxHops?: number
   readonly messageBudget?: number
+  /** 이 채널이 남이냐 내 다른 세션이냐 (§6.4). 생략하면 외부로 본다. */
+  readonly axis?: Axis
 }
 
 /** 어댑터에 전달되는, 복호화가 끝난 메시지. */
@@ -77,6 +88,8 @@ interface Joined {
   readonly channel: Channel
   readonly speech: SpeechControl
   readonly guard: ReplayGuard
+  /** 이 채널의 대화 축 (§6.4). 저장 시점에 이 값이 기록에 박힌다. */
+  readonly axis: Axis
   /** 이 채널에서 내가 보낸 마지막 seq. 봉투마다 1씩 올린다 (§10.5). */
   seq: bigint
 }
@@ -119,9 +132,21 @@ export class MeshNode {
       channel,
       speech: new SpeechControl(speechOptions),
       guard: new ReplayGuard(),
+      axis: options.axis ?? DEFAULT_AXIS,
       seq: 0n,
     })
     return id
+  }
+
+  /**
+   * 이 채널의 대화 축 (§6.4).
+   *
+   * 저장하는 쪽이 축을 확정하는 지점이다 — "분리는 UI 이전에 저장 시점의
+   * 일이다". 모르는 채널은 외부로 답한다: 축을 모르는 채로 내부라고 답하면
+   * 그 순간 §7 이 적용되지 않는 경로가 열린다.
+   */
+  axisOf(channelId: string): Axis {
+    return this.channels.get(channelId)?.axis ?? DEFAULT_AXIS
   }
 
   leave(channelId: string): boolean {

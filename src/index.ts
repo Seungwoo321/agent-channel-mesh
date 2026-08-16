@@ -127,6 +127,24 @@ export {
 } from './relay/client.js'
 
 /**
+ * 로컬 저장소 — 복호화한 대화가 남는 유일한 곳 (§6.3).
+ *
+ * 코어가 소유한다. 어댑터에 두면 Claude 와 Codex 가 두 벌로 갈리고,
+ * 그러면 어느 쪽도 전체를 보지 못한다.
+ */
+export {
+  MessageStore,
+  DEFAULT_STORE_DIR,
+  DEFAULT_RETENTION_MS,
+  DEFAULT_MAX_PER_CHANNEL,
+  type Axis,
+  type Direction,
+  type StoredMessage,
+  type NewMessage,
+  type StoreOptions,
+} from './store/store.js'
+
+/**
  * 노드 — 코어의 조립체 (§4).
  *
  * **어댑터는 이것만 쓴다.** `seal`/`receive` 를 직접 부르면 검사 순서(§10.5)나
