@@ -390,3 +390,75 @@ describe('형태와 순서', () => {
     expect((await rawMessages(store.pathOf(A)))[0]?.hops).toBe(2)
   })
 })
+
+describe('발화 판정 사유 (§7)', () => {
+  test('mute 가 왕복에서 살아남는다 — 판정은 도착 시점에만 구할 수 있다', async () => {
+    const store = new MessageStore({ dir })
+    const saved = await store.append(inbound({ mute: 'not-mentioned' }))
+
+    expect(saved.mute).toBe('not-mentioned')
+    // 파일에도 박혀 있어야 한다. 읽을 때 다시 물으면 같은 답이 나오지 않는다.
+    expect((await rawMessages(store.pathOf(A)))[0]?.mute).toBe('not-mentioned')
+    expect((await store.read(A))[0]?.mute).toBe('not-mentioned')
+  })
+
+  test('응답 대상이면 필드가 아예 붙지 않는다 — 없음이 곧 응답 대상이다', async () => {
+    const store = new MessageStore({ dir })
+    const saved = await store.append(inbound())
+
+    expect(saved).not.toHaveProperty('mute')
+    expect((await store.read(A))[0]).not.toHaveProperty('mute')
+  })
+
+  test('빈 사유는 저장되지 않는다 — 이유 없는 침묵 표시는 §7 을 설명하지 못한다', async () => {
+    const store = new MessageStore({ dir })
+    await expect(store.append(inbound({ mute: '' }))).rejects.toThrow(/mute/)
+  })
+
+  test('디스크의 mute 가 문자열이 아니면 읽지 않는다', async () => {
+    const store = new MessageStore({ dir })
+    await store.append(inbound({ mute: 'budget-exhausted' }))
+
+    const body = JSON.parse(await readFile(store.pathOf(A), 'utf8'))
+    body.messages[0].mute = 42
+    await writeFile(store.pathOf(A), JSON.stringify(body), { mode: 0o600 })
+
+    await expect(store.read(A)).rejects.toThrow(/messages\[0\]\.mute/)
+  })
+
+  test('디스크의 빈 mute 도 거부한다 — `[응답 안 함: ]` 는 표시가 의미를 잃는다', async () => {
+    const store = new MessageStore({ dir })
+    await store.append(inbound({ mute: 'hop-limit' }))
+
+    const body = JSON.parse(await readFile(store.pathOf(A), 'utf8'))
+    body.messages[0].mute = ''
+    await writeFile(store.pathOf(A), JSON.stringify(body), { mode: 0o600 })
+
+    await expect(store.read(A)).rejects.toThrow(/messages\[0\]\.mute/)
+  })
+
+  test('mute 없는 기존 형식(version 1) 파일이 그대로 읽힌다 — 형식 버전을 올리지 않았다', async () => {
+    const store = new MessageStore({ dir })
+    const legacy = {
+      version: 1,
+      channelId: A,
+      messages: [
+        {
+          id: 'abcd1234',
+          channelId: A,
+          direction: 'in',
+          axis: 'external',
+          text: '예전에 쌓인 말',
+          sentAt: 1_000,
+          storedAt: Date.now(),
+          delivered: false,
+        },
+      ],
+    }
+    await writeFile(store.pathOf(A), JSON.stringify(legacy), { mode: 0o600 })
+
+    const read = await store.read(A)
+    expect(read.map(m => m.text)).toEqual(['예전에 쌓인 말'])
+    expect(read[0]).not.toHaveProperty('mute')
+  })
+})

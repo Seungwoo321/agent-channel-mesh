@@ -13,8 +13,9 @@
  *
  * stdout 은 MCP 프레이밍이 쓴다. 사람에게 하는 말은 전부 stderr 로 나간다.
  */
-import { loadConfig, buildNode, DEFAULT_CONFIG_PATH } from './config.js'
+import { loadConfig, buildNode, DEFAULT_CONFIG_PATH, type StoreConfig } from './config.js'
 import { serve, type Delivery } from './server.js'
+import { MessageStore, type StoreOptions } from '../store/store.js'
 import { init, whoami, newChannelSecret } from './onboard.js'
 import { format } from '../identity/fingerprint.js'
 
@@ -34,9 +35,9 @@ export interface Args {
 
 const USAGE = `agent-channel-mesh
 
-  init                    설정을 만든다 (시드 생성 + 0600)
-  whoami                  상대에게 보낼 공개키와 내 지문을 보여준다
-  --delivery <push|inbox> 어댑터를 띄운다
+  init                         설정을 만든다 (시드 생성 + 0600)
+  whoami                       상대에게 보낼 공개키와 내 지문을 보여준다
+  --delivery <push|inbox|both> 어댑터를 띄운다
 
   --config <path>   기본값 ${DEFAULT_CONFIG_PATH} (환경변수 ACM_CONFIG 로도 지정)
   --relay <url>     init 이 설정에 박아 둘 릴레이 URL
@@ -44,6 +45,10 @@ const USAGE = `agent-channel-mesh
 
   --delivery push    Claude Code — 세션에 능동 주입한다
   --delivery inbox   그 외 에이전트(Codex 등) — 수신함에 쌓고 inbox 툴로 꺼낸다
+  --delivery both    주입 + 수신함. Claude Code 에서 기본으로 쓸 형태다 —
+                     주입은 개발 플래그(--dangerously-load-development-channels)에
+                     걸린 실험 기능이라, 그것이 막혔을 때 꺼내 갈 경로가
+                     함께 있어야 통째로 막히지 않는다 (§4)
 `
 
 /** 인자를 읽는다. 모르는 인자는 무시하지 않고 던진다 — 오타가 조용히 기본값이 되면 안 된다. */
@@ -68,8 +73,10 @@ export function parseArgs(argv: readonly string[], env: Record<string, string | 
   // 설정을 만들기 전에 전달 방식을 정하라는 말이 된다.
   if (command !== 'serve') return { command, config, relay, label }
 
-  if (delivery !== 'push' && delivery !== 'inbox') {
-    throw new Error(`--delivery 는 push 또는 inbox 여야 한다 (받은 값: ${delivery ?? '없음'})\n\n${USAGE}`)
+  if (delivery !== 'push' && delivery !== 'inbox' && delivery !== 'both') {
+    throw new Error(
+      `--delivery 는 push·inbox·both 중 하나여야 한다 (받은 값: ${delivery ?? '없음'})\n\n${USAGE}`,
+    )
   }
   return { command, delivery, config, relay, label }
 }
@@ -122,8 +129,34 @@ export async function main(argv: readonly string[]): Promise<{ stop: () => Promi
   return await serve({
     node,
     delivery: args.delivery!,
+    // 저장소를 **여기서** 세운다. `serve` 가 생략을 기본값으로 메워 주므로
+    // 안 넘겨도 서버는 뜨지만, 그러면 설정 파일의 `store.*` 는 검증만 되고
+    // 아무 효과가 없다 — 사용자는 보관 기한을 줄였다고 믿는데 30일 기본값이
+    // 그대로 돈다. 조용히 무시되는 설정이 없는 설정보다 나쁘다 (§6.3 · §11).
+    store: new MessageStore(storeOptions(config.store)),
     onDropped: d => process.stderr.write(`[agent-channel-mesh] 버림: ${d.reason} — ${d.detail}\n`),
   })
+}
+
+/**
+ * 설정 파일의 저장소 설정을 `MessageStore` 옵션으로 옮긴다.
+ *
+ * 이름이 같아도 **명시로 옮긴다.** 스프레드로 넘기면 두 타입이 우연히 겹쳐
+ * 있는 동안만 맞고, 한쪽이 필드를 늘리거나 이름을 바꾸는 순간 조용히
+ * 어긋난다 — 타입 검사는 통과하고 값만 사라지는 종류의 고장이다.
+ * `undefined` 를 넣지 않고 키 자체를 빼는 이유도 같다: `{dir: undefined}` 는
+ * `??` 기본값을 타지만, `exactOptionalPropertyTypes` 아래서는 타입이 갈린다.
+ *
+ * `~` 는 펴지 않는다 — `MessageStore` 생성자가 이미 편다(src/store/store.ts:140).
+ * 여기서 한 번 더 펴면 확장 규칙이 두 곳에 생기고, 갈리면 한쪽이 틀린다.
+ */
+function storeOptions(store: StoreConfig | undefined): StoreOptions {
+  if (store === undefined) return {}
+  return {
+    ...(store.dir !== undefined ? { dir: store.dir } : {}),
+    ...(store.retentionMs !== undefined ? { retentionMs: store.retentionMs } : {}),
+    ...(store.maxPerChannel !== undefined ? { maxPerChannel: store.maxPerChannel } : {}),
+  }
 }
 
 // 임포트될 때는 아무 일도 하지 않는다 — 테스트가 parseArgs 만 부를 수 있어야 한다.

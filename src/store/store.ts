@@ -85,6 +85,15 @@ export interface StoredMessage {
   /** 답하는 대상의 messageId (§6.2). 스레드가 아니라 본문 안의 참조다. */
   readonly replyTo?: string
   /**
+   * 발화 판정이 '응답 안 함' 이었을 때의 사유 (§7). 없으면 응답 대상이다.
+   *
+   * 판정은 **도착 시점에만** 구할 수 있다 — `SpeechControl` 은 예산·홉 같은
+   * 상태를 소비하므로, 읽을 때 다시 물으면 같은 답이 나오지 않는다. 그래서
+   * 남기는 자리는 저장 시점뿐이다. 이게 비면 정본을 읽는 `inbox` 툴이 남의
+   * 대화를 응답 대상처럼 내주고, 그건 §7 우회다.
+   */
+  readonly mute?: string
+  /**
    * 세션에 전달됐는지 (§6.6).
    *
    * 중복 전달을 막는 것은 프롬프트 지시문이 아니라 **이 상태**다. 지시문은
@@ -170,6 +179,7 @@ export class MessageStore {
       storedAt: this.now(),
       ...(record.hops !== undefined ? { hops: requireHops(record.hops) } : {}),
       ...(record.replyTo !== undefined ? { replyTo: requireHex(record.replyTo, 'replyTo') } : {}),
+      ...(record.mute !== undefined ? { mute: requireMute(record.mute) } : {}),
       // 수신은 아직 세션에 닿지 않았고, 발신은 애초에 주입 대상이 아니다 (§6.6).
       delivered: direction === 'out',
     }
@@ -436,6 +446,7 @@ function parseFile(parsed: unknown, file: string, channelId: string): StoredMess
       storedAt,
       ...(r.hops !== undefined ? { hops: requireHops(r.hops) } : {}),
       ...(replyTo !== undefined ? { replyTo: requireHex(replyTo, `messages[${i}].replyTo`) } : {}),
+      ...(r.mute !== undefined ? { mute: requireMute(r.mute, `messages[${i}].mute`) } : {}),
       delivered: r.delivered === true,
     }
   })
@@ -492,7 +503,7 @@ function requireTime(value: number, what: string): number {
   return value
 }
 
-// 아래 둘은 `unknown` 을 받는다 — 쓰기 경로(타입이 이미 좁다)와 읽기 경로(디스크에서
+// 아래 셋은 `unknown` 을 받는다 — 쓰기 경로(타입이 이미 좁다)와 읽기 경로(디스크에서
 // 온 `unknown`)가 **같은 검사**를 타야 한다. 읽기용 완화판을 따로 두면 그쪽이 느슨해진다.
 function requireHops(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
@@ -505,6 +516,20 @@ function requireHops(value: unknown): number {
 function requireHex(value: unknown, what: string): string {
   if (typeof value !== 'string' || !HEX.test(value) || value.length % 2 !== 0) {
     throw new Error(`${what} 은 소문자 hex 여야 한다: ${String(value).slice(0, 32)}…`)
+  }
+  return value
+}
+
+/**
+ * 발화 판정 사유 (§7). **빈 문자열은 거부한다.**
+ *
+ * 소비자는 이 값을 `[응답 안 함: <사유>]` 로 렌더한다 — 비어 있으면 표시가
+ * 남되 이유가 사라져, 모델이 "왜 답하면 안 되는지"를 알 수 없는 꼬리표만 본다.
+ * 사유 없는 침묵 표시는 §7 을 설명하지 못하므로, 없을 거면 필드가 없어야 한다.
+ */
+function requireMute(value: unknown, what = 'mute'): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${what} 는 비어 있지 않은 문자열이어야 한다: ${String(value).slice(0, 32)}…`)
   }
   return value
 }

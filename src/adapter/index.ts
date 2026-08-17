@@ -14,13 +14,23 @@ export {
   SEND_TOOL,
   CHANNELS_TOOL,
   INBOX_TOOL,
+  INBOX_LIMIT,
   type ToolSpec,
   type ToolResult,
   type HandlerContext,
 } from './tools.js'
 
-// 수신함 — 능동 주입이 없는 에이전트의 전달 방식
-export { Inbox, DEFAULT_CAPACITY, type InboxItem, type InboxOptions } from './inbox.js'
+// §6.1 묶음 렌더 — 주입 경로와 `inbox` 툴이 같은 형식을 쓴다.
+// `hex` 는 내보내지 않는다 — `onboard` 의 같은 이름과 부딪히고, 배럴에서
+// 둘 중 하나를 골라 이름을 붙이면 어느 쪽을 쓰는지가 호출부에서 안 보인다.
+export {
+  renderBundle,
+  groupByChannel,
+  senderOf,
+  BUNDLE_HEAD,
+  type BundleOptions,
+  type ChannelGroup,
+} from './bundle.js'
 
 // Claude Code — 능동 주입
 export {
@@ -30,10 +40,18 @@ export {
   TOOLS,
   type Notify,
   type ClaudeAdapterOptions,
+  type InjectOptions,
 } from './claude.js'
 
 // 프로세스로 띄우기
-export { serve, SERVER_NAME, SERVER_VERSION, type Delivery, type ServeOptions } from './server.js'
+export {
+  serve,
+  SERVER_NAME,
+  SERVER_VERSION,
+  DEFAULT_COALESCE_MS,
+  type Delivery,
+  type ServeOptions,
+} from './server.js'
 
 // 설정 — 어댑터는 대화창이 없어서 파일이 유일한 입력이다
 export {
@@ -46,6 +64,7 @@ export {
   type Config,
   type ChannelConfig,
   type MemberConfig,
+  type StoreConfig,
   type LoadOptions,
 } from './config.js'
 

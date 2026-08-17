@@ -123,6 +123,61 @@ describe('검증', () => {
   })
 })
 
+describe('저장소 설정 (§6.3)', () => {
+  const withStore = (store: unknown) => ({ ...sample(), store })
+
+  test('store 블록이 그대로 통과한다', () => {
+    const c = validate(withStore({ dir: '/tmp/acm', retentionMs: 86_400_000, maxPerChannel: 100 }))
+    expect(c.store).toEqual({ dir: '/tmp/acm', retentionMs: 86_400_000, maxPerChannel: 100 })
+  })
+
+  test('store 가 없어도 유효하다 — 저장소가 자기 기본값으로 선다', () => {
+    expect(validate(sample()).store).toBeUndefined()
+  })
+
+  test('빈 store 도 통과한다 — 전부 선택이다', () => {
+    expect(validate(withStore({})).store).toEqual({})
+  })
+
+  test('store 가 객체가 아니면 던진다', () => {
+    expect(() => validate(withStore('~/msgs'))).toThrow(/store 는 객체/)
+  })
+
+  test('dir 이 문자열이 아니면 던진다', () => {
+    expect(() => validate(withStore({ dir: 7 }))).toThrow(/store\.dir/)
+  })
+
+  test('무제한 보관을 설정 파일로도 못 넣는다', () => {
+    // 저장소 생성자도 막지만, 원인이 설정 파일일 때는 설정 오류로 죽어야 진단이 된다.
+    expect(() => validate(withStore({ retentionMs: Number.POSITIVE_INFINITY }))).toThrow(
+      /무제한 보관은 허용하지 않는다/,
+    )
+  })
+
+  test('retentionMs 가 0 이거나 음수면 던진다', () => {
+    expect(() => validate(withStore({ retentionMs: 0 }))).toThrow(/store\.retentionMs/)
+    expect(() => validate(withStore({ retentionMs: -1 }))).toThrow(/store\.retentionMs/)
+  })
+
+  test('retentionMs 가 숫자가 아니면 던진다', () => {
+    expect(() => validate(withStore({ retentionMs: '30d' }))).toThrow(/store\.retentionMs/)
+  })
+
+  test('maxPerChannel 이 정수가 아니면 던진다', () => {
+    expect(() => validate(withStore({ maxPerChannel: 1.5 }))).toThrow(/store\.maxPerChannel/)
+  })
+
+  test('maxPerChannel 이 1 미만이면 던진다', () => {
+    expect(() => validate(withStore({ maxPerChannel: 0 }))).toThrow(/store\.maxPerChannel/)
+  })
+
+  test('설정 파일로 읽어도 store 가 그대로 온다', async () => {
+    const raw = JSON.stringify(withStore({ retentionMs: 3_600_000 }))
+    const c = await loadConfig('/x.json', { read: async () => raw, mode: async () => 0o600 })
+    expect(c.store?.retentionMs).toBe(3_600_000)
+  })
+})
+
 describe('파일 로드', () => {
   const read = async () => JSON.stringify(sample())
 
@@ -235,11 +290,15 @@ describe('인자', () => {
   })
 
   test('delivery 를 추측하지 않는다 — 틀리면 조용히 고장난다', () => {
-    expect(() => parseArgs([])).toThrow(/push 또는 inbox/)
+    expect(() => parseArgs([])).toThrow(/push·inbox·both/)
+  })
+
+  test('both 를 받는다', () => {
+    expect(parseArgs(['--delivery', 'both']).delivery).toBe('both')
   })
 
   test('모르는 값을 거부한다', () => {
-    expect(() => parseArgs(['--delivery', 'both'])).toThrow(/push 또는 inbox/)
+    expect(() => parseArgs(['--delivery', 'pusn'])).toThrow(/push·inbox·both/)
   })
 
   test('모르는 인자를 무시하지 않는다 — 오타가 기본값이 되면 안 된다', () => {
@@ -346,7 +405,7 @@ describe('명령 인자', () => {
   })
 
   test('serve 는 여전히 delivery 를 요구한다', () => {
-    expect(() => parseArgs([])).toThrow(/push 또는 inbox/)
+    expect(() => parseArgs([])).toThrow(/push·inbox·both/)
   })
 
   test('init 에 relay·label 을 준다', () => {

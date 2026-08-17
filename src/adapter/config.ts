@@ -50,12 +50,30 @@ export interface ChannelConfig {
   readonly axis?: Axis
 }
 
+/**
+ * 로컬 저장소 설정 (§6.3).
+ *
+ * 저장소는 코어가 소유하지만 그 값을 정하는 입구는 여기다 — 어댑터의 유일한
+ * 입력이 설정 파일이므로(§11), 여기에 자리가 없으면 사용자는 보관 기한을
+ * 바꿀 방법이 아예 없다. 전부 선택이고, 생략하면 `MessageStore` 의 기본값이다.
+ */
+export interface StoreConfig {
+  /** 저장 위치. 생략하면 설정 파일 옆(`~/.agent-channel-mesh/messages`). */
+  readonly dir?: string
+  /** 보관 기한(ms). 유한한 양수여야 한다 — 무제한은 열어 두지 않는다 (§6.3). */
+  readonly retentionMs?: number
+  /** 채널당 보관 개수 상한. 기한과 별개로 파일 크기를 묶어 둔다. */
+  readonly maxPerChannel?: number
+}
+
 export interface Config {
   /** 신원 시드 32B (hex). 이것만 있으면 신원 전체가 재파생된다 (§10.2). */
   readonly seed: string
   /** 릴레이 base URL. 없으면 로컬 전용 — 아무것도 주고받지 못한다. */
   readonly relay?: string
   readonly channels: readonly ChannelConfig[]
+  /** 로컬 저장소 설정. 없으면 저장소가 자기 기본값으로 선다. */
+  readonly store?: StoreConfig
 }
 
 /** hex 를 바이트로. 길이가 어긋나면 조용히 자르지 않고 던진다. */
@@ -155,7 +173,48 @@ export function validate(raw: unknown): Config {
     return ch as unknown as ChannelConfig
   })
 
-  return { seed: o.seed, relay: o.relay as string | undefined, channels }
+  const store = validateStore(o.store)
+
+  return { seed: o.seed, relay: o.relay as string | undefined, channels, ...(store ? { store } : {}) }
+}
+
+/**
+ * 저장소 설정을 검사한다 (§6.3).
+ *
+ * `MessageStore` 생성자도 같은 것을 던지지만, 원인이 설정 파일일 때는 **설정
+ * 오류로** 죽는 편이 진단이 된다 — 저장소가 던지면 사용자는 자기가 쓴 값이
+ * 아니라 코어를 의심한다.
+ */
+function validateStore(raw: unknown): StoreConfig | undefined {
+  if (raw === undefined) return undefined
+  if (typeof raw !== 'object' || raw === null) throw new Error('store 는 객체여야 한다')
+  const s = raw as Record<string, unknown>
+
+  if (s.dir !== undefined && typeof s.dir !== 'string') throw new Error('store.dir 은 문자열이다')
+  // Infinity·0·음수를 전부 막는다. 무제한 보관이 기본값이 아닌 것만으로는
+  // 부족하다 — 설정 파일로 넣을 수 있으면 §6.3 은 그 자리로 우회된다.
+  if (
+    s.retentionMs !== undefined &&
+    (typeof s.retentionMs !== 'number' || !Number.isFinite(s.retentionMs) || s.retentionMs <= 0)
+  ) {
+    throw new Error(
+      'store.retentionMs 는 유한한 양수(ms)여야 한다 — 무제한 보관은 허용하지 않는다 (§6.3)',
+    )
+  }
+  if (
+    s.maxPerChannel !== undefined &&
+    (typeof s.maxPerChannel !== 'number' ||
+      !Number.isInteger(s.maxPerChannel) ||
+      s.maxPerChannel <= 0)
+  ) {
+    throw new Error('store.maxPerChannel 은 1 이상의 정수여야 한다')
+  }
+
+  return {
+    ...(s.dir !== undefined ? { dir: s.dir as string } : {}),
+    ...(s.retentionMs !== undefined ? { retentionMs: s.retentionMs as number } : {}),
+    ...(s.maxPerChannel !== undefined ? { maxPerChannel: s.maxPerChannel as number } : {}),
+  }
 }
 
 /**
