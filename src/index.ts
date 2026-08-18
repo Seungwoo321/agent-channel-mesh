@@ -137,6 +137,7 @@ export {
   DEFAULT_STORE_DIR,
   DEFAULT_RETENTION_MS,
   DEFAULT_MAX_PER_CHANNEL,
+  DEFAULT_CLAIM_TTL_MS,
   type Axis,
   type Direction,
   type StoredMessage,

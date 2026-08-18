@@ -17,9 +17,22 @@
  * **채널당 파일 하나**로 둔다. 한 파일에 전 채널을 몰면 purge 가 "걸러서 다시
  * 쓰기"가 되어, 지운 대화의 바이트가 파일 안에 잔존한다. §6.3 의 "삭제는 실제
  * 삭제다"가 성립하는 형상은 채널당 파일뿐이고, 그때 purge 는 `unlink()` 다.
+ *
+ * **소비자는 한 프로세스가 아니다.** 어댑터(MCP 서버)와 훅은 별개 프로세스이고
+ * 둘 다 이 파일을 읽고 고쳐 쓴다. 그래서 두 겹의 보호가 있다.
+ *
+ * - **변경 경로는 전부 채널 잠금 안에서 돈다**(src/store/lock.ts). `write()` 의
+ *   temp+rename 은 *한 번의 쓰기*만 원자적이라, 읽고-고치고-쓰는 구간은 그것만으로
+ *   보호되지 않는다. 잠금이 없으면 나중 쓰기가 앞선 쓰기를 통째로 덮어 **도착한
+ *   메시지가 사라진다**. 순수 읽기는 잠금을 잡지 않는다.
+ * - **전달은 리스로 선점한다**(`claimUndelivered`). "읽어서 내보내고 나중에
+ *   전달됨으로 찍는다"는 두 단계 사이가 창이라, 그 사이에 다른 프로세스가 같은
+ *   것을 집으면 **같은 말이 두 번 간다**. 읽기와 표시를 한 번의 잠금 안에서 함께
+ *   한다 — §6.6 의 "중복은 상태로 막는다"가 프로세스 사이에서도 성립해야 한다.
  */
 import { chmod, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { withLock } from './lock.js'
 
 /** 메시지가 흐른 방향. 내가 보낸 것과 받은 것을 섞지 않는다. */
 export type Direction = 'in' | 'out'
@@ -47,14 +60,41 @@ export const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 /** 채널당 보관 개수 상한. 기한과 별개로 파일 크기를 묶어 둔다. */
 export const DEFAULT_MAX_PER_CHANNEL = 2000
 
+/**
+ * 전달 리스의 유효 시간. 이만큼 지난 선점은 풀린 것으로 본다.
+ *
+ * 선점은 "내가 지금 이걸 세션에 넣는 중"이라는 표시다. 그 프로세스가 주입
+ * 도중에 죽으면 표시만 남고 아무도 그 메시지를 다시 집지 않는다 — §6.6 이
+ * 훅을 둔 이유가 "주입이 실패했을 때 뜨는 안전망"인데, 선점이 영구히 남으면
+ * 그 안전망이 자기 손으로 막힌다. 그래서 리스에는 반드시 기한이 있다.
+ *
+ * 60초는 주입 한 번(수백 ms)보다 두 자릿수 넉넉하되, 사람이 기다릴 수 있는
+ * 범위다. 짧으면 살아 있는 주입과 겹쳐 중복이 나고, 길면 유실이 오래 안 보인다.
+ */
+export const DEFAULT_CLAIM_TTL_MS = 60_000
+
 /** 저장 파일의 최대 허용 권한. 설정 파일(§11)과 같은 기준이다. */
 const MAX_FILE_MODE = 0o600
 
 /** 저장 디렉토리의 최대 허용 권한. 목록만 읽혀도 채널 id 가 새므로 함께 막는다. */
 const MAX_DIR_MODE = 0o700
 
-/** 파일 형식 버전. 형식을 바꿀 때 조용히 오해석하지 않으려고 둔다. */
-const FORMAT_VERSION = 1
+/**
+ * 파일 형식 버전. 형식을 바꿀 때 조용히 오해석하지 않으려고 둔다.
+ *
+ * 2 = `claimedAt`(전달 리스)이 붙은 형식.
+ */
+const FORMAT_VERSION = 2
+
+/**
+ * 읽어 줄 형식들. **버전 1 을 거부하지 않는다.**
+ *
+ * 1 과 2 의 차이는 `claimedAt` 이 있느냐뿐이고, 없으면 "선점되지 않음"으로
+ * 읽으면 그만이다. 여기서 거부하면 업그레이드 한 번에 기존 사용자의 대화가
+ * 통째로 죽는다 — 형식 버전은 오해석을 막으려고 둔 것이지 데이터를 버리라고
+ * 둔 것이 아니다. 다음 쓰기에서 2 로 올라간다.
+ */
+const READABLE_VERSIONS: ReadonlySet<number> = new Set([1, 2])
 
 /** 채널 id 는 채널 태그 hex 다(§10.11). 경로 조각이 되므로 형태를 강제한다. */
 const CHANNEL_ID = /^[0-9a-f]{2,64}$/
@@ -100,10 +140,30 @@ export interface StoredMessage {
    * 컨텍스트가 압축되면 사라지고, 모델이 무시해도 막을 방법이 없다.
    */
   readonly delivered: boolean
+  /**
+   * 전달 리스를 잡은 시각(ms). 없으면 아무도 집지 않은 상태다.
+   *
+   * `undelivered()` 로 읽고 나중에 `markDelivered()` 로 찍는 두 단계 사이에는
+   * 다른 프로세스가 같은 것을 집을 수 있다 — 어댑터와 훅은 별개 프로세스라
+   * 그 창이 실재한다. 이 필드는 **읽는 순간 원자적으로 찍혀** 그 창을 없앤다
+   * (`claimUndelivered`). 여기까지 해야 §6.6 의 "중복은 지시문이 아니라 상태로
+   * 막는다"가 한 프로세스 안에서만 참인 말이 아니게 된다.
+   *
+   * {@link DEFAULT_CLAIM_TTL_MS} 를 넘긴 선점은 풀린 것으로 본다 — 선점하고
+   * 죽은 프로세스의 메시지가 영영 안 나오면 안 된다.
+   */
+  readonly claimedAt?: number
 }
 
-/** 저장을 요청할 때 주는 것. `storedAt`·`delivered` 는 저장소가 정한다. */
-export interface NewMessage extends Omit<StoredMessage, 'id' | 'storedAt' | 'delivered'> {
+/**
+ * 저장을 요청할 때 주는 것. `storedAt`·`delivered`·`claimedAt` 은 저장소가 정한다.
+ *
+ * 특히 `claimedAt` 은 **저장소만 찍는다.** 호출부가 선점 상태를 들고 들어오면
+ * 리스가 "잠금 안에서 원자적으로 정해진다"는 전제가 깨지고, 그 순간 이 필드는
+ * 중복 전달을 막지 못한다.
+ */
+export interface NewMessage
+  extends Omit<StoredMessage, 'id' | 'storedAt' | 'delivered' | 'claimedAt'> {
   /** 없으면 새로 뽑는다. 수신은 봉투의 messageId 를 그대로 넣는다. */
   readonly id?: string
 }
@@ -112,8 +172,17 @@ export interface StoreOptions {
   readonly dir?: string
   readonly retentionMs?: number
   readonly maxPerChannel?: number
+  /** 전달 리스 유효 시간(ms). 기본 {@link DEFAULT_CLAIM_TTL_MS}. */
+  readonly claimTtlMs?: number
   /** 지금 시각. 테스트에서만 주입한다. */
   readonly now?: () => number
+  /**
+   * 잠금 획득 총 대기 상한(ms). 테스트에서만 준다 — 기본값(5초)은 ms 단위
+   * 임계 구역보다 세 자릿수 넉넉하다.
+   */
+  readonly lockTimeoutMs?: number
+  /** 잠금 stale 판정 기준(ms). 테스트에서만 준다. */
+  readonly lockStaleMs?: number
 }
 
 /** 파일에 실제로 들어가는 형태. */
@@ -134,13 +203,23 @@ export class MessageStore {
   private readonly dir: string
   private readonly retention: number
   private readonly maxPerChannel: number
+  private readonly claimTtl: number
   private readonly now: () => number
+  private readonly lockTimeoutMs: number | undefined
+  private readonly lockStaleMs: number | undefined
 
   constructor(options: StoreOptions = {}) {
     this.dir = expandHome(options.dir ?? DEFAULT_STORE_DIR)
     this.retention = options.retentionMs ?? DEFAULT_RETENTION_MS
     this.maxPerChannel = options.maxPerChannel ?? DEFAULT_MAX_PER_CHANNEL
+    this.claimTtl = options.claimTtlMs ?? DEFAULT_CLAIM_TTL_MS
     this.now = options.now ?? Date.now
+    this.lockTimeoutMs = options.lockTimeoutMs
+    this.lockStaleMs = options.lockStaleMs
+    // 리스에 기한이 없으면 선점하고 죽은 프로세스의 메시지가 영영 안 나온다.
+    if (!Number.isFinite(this.claimTtl) || this.claimTtl <= 0) {
+      throw new Error('claimTtlMs 는 유한한 양수여야 한다 — 기한 없는 선점은 유실이다')
+    }
     // 무제한 보관은 옵션으로도 열어 두지 않는다 — 기본값만 유한하면 호출부가
     // Infinity 를 넣어 §6.3 을 우회한다.
     if (!Number.isFinite(this.retention) || this.retention <= 0) {
@@ -156,11 +235,20 @@ export class MessageStore {
     return this.retention
   }
 
+  /** 전달 리스 유효 시간(ms). 기한이 있다는 것을 밖에서 확인할 수 있어야 한다. */
+  get claimTtlMs(): number {
+    return this.claimTtl
+  }
+
   /**
    * 한 건을 남긴다.
    *
    * 쓰는 김에 기한 경과분을 **파일에서 실제로 지운다**(§6.3). 표시만 지우면
    * 평문 바이트가 그대로 남아 보관 기한이 장식이 된다.
+   *
+   * 읽고-더하고-쓰는 전 구간이 채널 잠금 안이다. 밖에 두면 다른 프로세스의
+   * `markDelivered` 가 같은 파일을 읽어 되쓰면서 방금 더한 것을 덮는다 —
+   * 도착한 메시지가 흔적 없이 사라지고, 정본이라 선언한 곳의 유실이 된다.
    */
   async append(record: NewMessage): Promise<StoredMessage> {
     const channelId = requireChannelId(record.channelId)
@@ -184,11 +272,13 @@ export class MessageStore {
       delivered: direction === 'out',
     }
 
-    const messages = await this.load(channelId)
-    messages.push(stored)
-    sortByTime(messages)
-    await this.write(channelId, this.trim(messages))
-    return stored
+    return this.locked(channelId, async () => {
+      const messages = this.fresh(await this.parse(channelId))
+      messages.push(stored)
+      sortByTime(messages)
+      await this.write(channelId, this.trim(messages))
+      return stored
+    })
   }
 
   /**
@@ -207,6 +297,10 @@ export class MessageStore {
    *
    * 훅은 이것만 본다 — 그래야 주입이 도는 세션에서 훅이 조용하고, 주입이
    * 실패했거나 세션이 놓쳤을 때만 뜬다. 훅은 알림이 아니라 안전망이다.
+   *
+   * **조회다.** 선점 중인 것도 아직 전달되지 않았으므로 그대로 보인다. 이걸
+   * 읽어서 곧바로 내보내면 다른 프로세스와 겹치므로, 실제로 내보낼 때는
+   * {@link claimUndelivered} 를 쓴다.
    */
   async undelivered(channelId?: string, limit?: number): Promise<readonly StoredMessage[]> {
     const ids = channelId === undefined ? await this.channels() : [requireChannelId(channelId)]
@@ -218,24 +312,59 @@ export class MessageStore {
     return tail(out, limit)
   }
 
-  /** 전달된 것으로 표시하고, **실제로 바뀐 개수**를 준다. */
-  async markDelivered(ids: readonly string[]): Promise<number> {
-    const wanted = new Set(ids)
-    if (wanted.size === 0) return 0
+  /**
+   * 내보낼 것을 **원자적으로 선점**하고 그 목록을 준다 (§6.6).
+   *
+   * `undelivered()` 로 읽고 나중에 `markDelivered()` 로 찍는 사이가 경합 창이다 —
+   * 어댑터와 훅은 별개 프로세스라, 그 창에서 둘이 같은 메시지를 집으면 같은 말이
+   * 세션에 두 번 간다. 여기서는 읽기와 선점 표시가 **한 잠금 안에서 함께** 일어나
+   * 그 창이 없다. 이것이 §6.6 의 "중복은 지시문이 아니라 상태로 막는다"를
+   * 프로세스 사이에서도 참으로 만드는 지점이다.
+   *
+   * 전달에 성공하면 {@link markDelivered}, 실패하면 {@link release} 다. 어느 쪽도
+   * 못 부르고 죽으면 {@link DEFAULT_CLAIM_TTL_MS} 뒤에 저절로 풀린다.
+   *
+   * `limit` 은 **오래된 것부터** 준다 — 밀린 큐를 내보내는 동작이라 앞머리를 계속
+   * 건너뛰면 오래된 것이 굶는다(`undelivered` 의 `limit` 은 최신 쪽을 남기는 조회
+   * 의미이고, 여기는 배달 순서다).
+   *
+   * **채널 잠금은 하나씩 잡았다 놓는다.** 두 개를 겹쳐 들면 반대 순서로 도는
+   * 프로세스와 교착한다.
+   */
+  async claimUndelivered(channelId?: string, limit?: number): Promise<readonly StoredMessage[]> {
+    const ids = channelId === undefined ? await this.channels() : [requireChannelId(channelId)]
+    if (limit !== undefined) requireLimit(limit)
 
-    let marked = 0
-    for (const channelId of await this.channels()) {
-      const messages = await this.load(channelId, true)
-      let touched = false
-      const next = messages.map(m => {
-        if (m.delivered || !wanted.has(m.id)) return m
-        touched = true
-        marked += 1
-        return { ...m, delivered: true }
-      })
-      if (touched) await this.write(channelId, next)
+    const claimed: StoredMessage[] = []
+    for (const id of ids) {
+      const room = limit === undefined ? undefined : limit - claimed.length
+      if (room !== undefined && room <= 0) break
+      claimed.push(...(await this.claimIn(id, room)))
     }
-    return marked
+    sortByTime(claimed)
+    return claimed
+  }
+
+  /**
+   * 선점을 푼다. 실제로 풀린 개수를 준다.
+   *
+   * 전달에 실패했을 때 쓴다. 이걸 안 부르면 리스 기한만큼 그 메시지가 안 나오는데,
+   * 그건 유실은 아니지만 §6.6 이 훅에 맡긴 안전망이 그 시간만큼 늦게 뜬다는 뜻이다.
+   */
+  async release(ids: readonly string[]): Promise<number> {
+    return this.rewriteByIds(ids, m => (m.claimedAt === undefined ? undefined : stripClaim(m)))
+  }
+
+  /**
+   * 전달된 것으로 표시하고, **실제로 바뀐 개수**를 준다.
+   *
+   * 선점도 함께 푼다 — 전달이 확정된 뒤의 리스는 아무 의미가 없고, 남겨 두면
+   * 파일에 죽은 상태가 쌓인다.
+   */
+  async markDelivered(ids: readonly string[]): Promise<number> {
+    return this.rewriteByIds(ids, m =>
+      m.delivered ? undefined : { ...stripClaim(m), delivered: true },
+    )
   }
 
   /**
@@ -243,12 +372,18 @@ export class MessageStore {
    *
    * `unlink` 다 — 걸러서 다시 쓰지 않는다. 권한 검사도 걸지 않는데, 권한이
    * 넓어진 파일이야말로 지울 수 있어야 하고 삭제는 내용을 읽지 않기 때문이다.
+   * 같은 이유로 디렉토리를 만들지도 않는다 — 없으면 지울 것도 없다.
+   *
+   * 그럼에도 잠금은 잡는다. 다른 프로세스가 읽고-고치는 중에 파일이 사라지면
+   * 그 프로세스는 지운 대화를 **되살려 쓴다** — "삭제는 실제 삭제다"(§6.3)가
+   * 경합 한 번으로 뒤집힌다.
    */
   async purge(channelId: string): Promise<boolean> {
+    const file = this.pathOf(channelId)
     try {
-      await unlink(this.pathOf(channelId))
-      return true
+      return await withLock(file, () => unlinkExisting(file), this.lockOptions())
     } catch (e) {
+      // 잠금 파일조차 못 만든다 = 저장 디렉토리가 없다 = 지울 것이 없다.
       if (isMissing(e)) return false
       throw e
     }
@@ -282,9 +417,114 @@ export class MessageStore {
    *
    * `persist` 면 떨어낸 결과를 되쓴다 — §6.3 의 "삭제는 실제 삭제다"가 읽기
    * 경로에서도 성립해야 한다. 읽을 때만 걸러 보여주면 파일에는 남는다.
-   * `append` 경로에서는 어차피 뒤이어 쓰므로 되쓰지 않는다.
+   *
+   * **잠금은 실제로 되쓸 때만 잡는다.** 순수 읽기까지 직렬화하면 조망 UI 하나가
+   * 도착 처리를 막는다. 되쓸 것이 있으면 잠금 안에서 **다시 읽고** 다시 거른다 —
+   * 잠금 밖에서 읽은 목록을 그대로 쓰면 그 사이에 append 된 것을 덮는다.
    */
   private async load(channelId: string, persist = false): Promise<StoredMessage[]> {
+    const messages = await this.parse(channelId)
+    const fresh = this.fresh(messages)
+    if (!persist || fresh.length === messages.length) return fresh
+
+    return this.locked(channelId, async () => {
+      const again = await this.parse(channelId)
+      const kept = this.fresh(again)
+      if (kept.length !== again.length) await this.write(channelId, kept)
+      return kept
+    })
+  }
+
+  /**
+   * 채널 잠금 안에서 돌린다. 변경 경로 전용이다 (src/store/lock.ts).
+   *
+   * 잠금 파일이 저장 디렉토리에 생기므로, 첫 쓰기처럼 디렉토리가 아직 없을 수
+   * 있는 경로를 위해 `ensureDir` 을 함께 넘긴다 — 권한 검사도 거기서 같이 돈다.
+   */
+  private async locked<T>(channelId: string, fn: () => Promise<T>): Promise<T> {
+    return withLock(this.pathOf(channelId), fn, {
+      ...this.lockOptions(),
+      ensureDir: () => this.ensureDir(),
+    })
+  }
+
+  private lockOptions(): { staleMs?: number; timeoutMs?: number } {
+    return {
+      ...(this.lockStaleMs !== undefined ? { staleMs: this.lockStaleMs } : {}),
+      ...(this.lockTimeoutMs !== undefined ? { timeoutMs: this.lockTimeoutMs } : {}),
+    }
+  }
+
+  /**
+   * 한 채널에서 미전달·미선점분을 선점한다. 잠금 안에서 읽고 찍는다.
+   *
+   * 기한 지난 선점은 여기서 **풀린 것으로 본다**. 선점하고 죽은 프로세스의
+   * 메시지가 영영 안 나오면, 훅이라는 안전망을 선점 표시 하나가 막는다.
+   */
+  private async claimIn(channelId: string, room?: number): Promise<StoredMessage[]> {
+    return this.locked(channelId, async () => {
+      const raw = await this.parse(channelId)
+      const messages = this.fresh(raw)
+      const now = this.now()
+      const taken: StoredMessage[] = []
+      const next = messages.map(m => {
+        if (m.delivered) return m
+        if (m.claimedAt !== undefined && now - m.claimedAt < this.claimTtl) return m
+        if (room !== undefined && taken.length >= room) return m
+        const leased: StoredMessage = { ...m, claimedAt: now }
+        taken.push(leased)
+        return leased
+      })
+      // 선점이 없어도 기한 경과분이 떨어져 나갔으면 그 삭제는 확정해야 한다.
+      if (taken.length > 0 || messages.length !== raw.length) await this.write(channelId, next)
+      return taken
+    })
+  }
+
+  /**
+   * 주어진 id 들을 채널마다 찾아 고쳐 쓴다. 실제로 바뀐 개수를 준다.
+   *
+   * `change` 가 `undefined` 를 주면 그 레코드는 손대지 않는다. `markDelivered` 와
+   * `release` 가 같은 골격을 쓰게 두는 이유는, 잠금 범위·채널 순회·되쓰기 조건이
+   * 갈리면 한쪽만 고쳐져 그쪽이 조용히 경합에 열리기 때문이다.
+   */
+  private async rewriteByIds(
+    ids: readonly string[],
+    change: (m: StoredMessage) => StoredMessage | undefined,
+  ): Promise<number> {
+    const wanted = new Set(ids)
+    if (wanted.size === 0) return 0
+
+    let changed = 0
+    // 채널을 하나씩 잡았다 놓는다 — 두 개를 겹쳐 들면 교착이다.
+    for (const channelId of await this.channels()) {
+      changed += await this.locked(channelId, async () => {
+        const messages = this.fresh(await this.parse(channelId))
+        let touched = 0
+        const next = messages.map(m => {
+          if (!wanted.has(m.id)) return m
+          const replaced = change(m)
+          if (replaced === undefined) return m
+          touched += 1
+          return replaced
+        })
+        if (touched > 0) await this.write(channelId, next)
+        return touched
+      })
+    }
+    return changed
+  }
+
+  /** 기한 경과분을 떨어낸다. 순서는 시간순으로 맞춘다. */
+  private fresh(messages: StoredMessage[]): StoredMessage[] {
+    const cutoff = this.now() - this.retention
+    const kept = messages.filter(m => m.storedAt >= cutoff)
+    sortByTime(kept)
+    return kept
+  }
+
+  /** 파일을 읽어 형태를 검사한다. 거르지도, 되쓰지도 않는다. */
+  private async parse(channelId: string): Promise<StoredMessage[]> {
     const file = this.pathOf(channelId)
     let raw: string
     try {
@@ -308,13 +548,7 @@ export class MessageStore {
       // 남아 있던 대화를 우리 손으로 지우게 된다.
       throw new Error(`저장 파일이 손상됐다: ${file} (${String(e)})`)
     }
-    const messages = parseFile(parsed, file, channelId)
-
-    const cutoff = this.now() - this.retention
-    const fresh = messages.filter(m => m.storedAt >= cutoff)
-    sortByTime(fresh)
-    if (persist && fresh.length !== messages.length) await this.write(channelId, fresh)
-    return fresh
+    return parseFile(parsed, file, channelId)
   }
 
   /** 개수 상한. 넘으면 오래된 것부터 버린다 — 새 것을 거부하지 않는다. */
@@ -401,7 +635,7 @@ function parseFile(parsed: unknown, file: string, channelId: string): StoredMess
     throw new Error(`저장 파일이 객체가 아니다: ${file}`)
   }
   const o = parsed as Record<string, unknown>
-  if (o.version !== FORMAT_VERSION) {
+  if (typeof o.version !== 'number' || !READABLE_VERSIONS.has(o.version)) {
     throw new Error(`모르는 저장 형식이다: ${file} (version ${String(o.version)})`)
   }
   if (!Array.isArray(o.messages)) throw new Error(`저장 파일에 messages 배열이 없다: ${file}`)
@@ -448,6 +682,10 @@ function parseFile(parsed: unknown, file: string, channelId: string): StoredMess
       ...(replyTo !== undefined ? { replyTo: requireHex(replyTo, `messages[${i}].replyTo`) } : {}),
       ...(r.mute !== undefined ? { mute: requireMute(r.mute, `messages[${i}].mute`) } : {}),
       delivered: r.delivered === true,
+      // 버전 1 파일에는 없다. 없으면 "선점되지 않음"이고, 그게 맞는 해석이다.
+      ...(r.claimedAt !== undefined
+        ? { claimedAt: requireTime(r.claimedAt, `messages[${i}].claimedAt`) }
+        : {}),
     }
   })
 }
@@ -455,10 +693,38 @@ function parseFile(parsed: unknown, file: string, channelId: string): StoredMess
 /** 최신 쪽 `limit` 개. 자른 뒤에도 순서는 시간순 그대로다. */
 function tail(messages: readonly StoredMessage[], limit?: number): readonly StoredMessage[] {
   if (limit === undefined) return messages
+  requireLimit(limit)
+  return messages.slice(Math.max(0, messages.length - limit))
+}
+
+function requireLimit(limit: number): number {
   if (!Number.isInteger(limit) || limit < 0) {
     throw new Error(`limit 은 0 이상의 정수다: ${String(limit)}`)
   }
-  return messages.slice(Math.max(0, messages.length - limit))
+  return limit
+}
+
+/**
+ * 선점 표시를 뗀 사본. 필드를 `undefined` 로 남기지 않고 **없앤다**.
+ *
+ * `claimedAt: undefined` 를 그대로 쓰면 JSON 에서는 키가 사라지지만 메모리의
+ * 객체에는 남아, 같은 레코드가 경로마다 다른 모양으로 보인다. 없음은 없음이다.
+ */
+function stripClaim(m: StoredMessage): StoredMessage {
+  if (m.claimedAt === undefined) return m
+  const { claimedAt: _dropped, ...rest } = m
+  return rest
+}
+
+/** 있으면 지우고 `true`. 없으면 `false` — 없다는 사실이 오류는 아니다. */
+async function unlinkExisting(file: string): Promise<boolean> {
+  try {
+    await unlink(file)
+    return true
+  } catch (e) {
+    if (isMissing(e)) return false
+    throw e
+  }
 }
 
 /** 시간순(오름차순). 같은 시각이면 저장 순, 그다음 id — 자르는 자리가 흔들리지 않게. */
@@ -496,7 +762,8 @@ function requireText(value: string): string {
   return value
 }
 
-function requireTime(value: number, what: string): number {
+// 디스크에서 온 값(`unknown`)과 쓰기 경로의 값이 **같은 검사**를 타야 한다.
+function requireTime(value: unknown, what: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     throw new Error(`${what} 은 epoch ms 숫자여야 한다: ${String(value)}`)
   }
