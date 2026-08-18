@@ -34,7 +34,7 @@ import { dirname, join, resolve } from 'node:path'
 export const HOOK_MARKER = '/install/notify.'
 
 /** Codex 훅 실행 상한(초). 저장소 파일 몇 개를 읽는 일이라 넉넉하다. */
-const CODEX_TIMEOUT_SEC = 10
+export const CODEX_TIMEOUT_SEC = 10
 
 /**
  * Codex 가 컨텍스트에 실어 주는 최대 글자 수.
@@ -43,7 +43,7 @@ const CODEX_TIMEOUT_SEC = 10
  * Codex 가 **말 중간에서** 잘라 내고, 우리가 메시지 단위로 끊어 둔 의미가
  * 없어진다.
  */
-const CODEX_CONTEXT_LIMIT = 12_000
+export const CODEX_CONTEXT_LIMIT = 12_000
 
 /**
  * 등록할 이벤트.
@@ -60,10 +60,13 @@ export const HOOK_EVENTS: readonly { readonly name: string; readonly matcher?: s
   { name: 'PostToolUse', matcher: '.*' },
 ]
 
+/**
+ * `async` 자리를 두지 않는다 — Codex 가 async 훅을 목록에서 빼 버리므로
+ * (아래 {@link codexHooks}), 타입에 자리가 있으면 언젠가 다시 채워진다.
+ */
 interface CommandEntry {
   readonly type: 'command'
   readonly command: string
-  readonly async?: boolean
   readonly timeout?: number
   readonly additionalContextLimit?: number
 }
@@ -73,7 +76,7 @@ interface MatcherEntry {
   readonly hooks: readonly CommandEntry[]
 }
 
-type HookMap = Record<string, MatcherEntry[]>
+export type HookMap = Record<string, MatcherEntry[]>
 
 /**
  * 병합 결과.
@@ -127,9 +130,16 @@ export function claudeHooks(runtime: string, script: string, config?: string): H
 /**
  * Codex 의 `hooks` 값.
  *
- * `async: true` 가 기본이다 — async 훅의 결과는 프롬프트 직전뿐 아니라 **모델
- * 샘플링 루프 안에서도** 회수된다. 긴 작업을 도는 세션이 턴 경계를 기다리지
- * 않고 알림을 받는 유일한 길이다 (§6.6).
+ * **`async` 를 달지 않는다.** Codex 0.147 은 async 훅을 지원하지 않고, 만나면
+ * 등록 목록에서 **통째로 뺀 뒤** 경고 한 줄만 남긴다(`hooks/list` 의
+ * `warnings: ["skipping async hook …"]`). 파일에는 남아 있는데 한 번도 돌지
+ * 않는, 이 파일이 막으려는 바로 그 고장이다. 턴 중간 알림은 `PostToolUse` 가
+ * 맡는다 — 툴 호출마다 도는 동기 훅이라 턴 경계를 기다리지 않는다 (§6.6).
+ *
+ * 필드 이름은 **camelCase 로 쓴다.** 문서·바이너리에는 `timeout_sec` ·
+ * `additional_context_limit` 이라는 이름도 보이지만 설정 파일 파서는 그것을
+ * 읽지 않는다 — 조용히 버리고 기본값(600초 · 무제한)으로 떨어진다. 우리가
+ * 메시지 단위로 끊어 둔 예산이 무의미해지는 자리라 casing 하나가 곧 고장이다.
  */
 export function codexHooks(runtime: string, script: string, config?: string): HookMap {
   const out: HookMap = {}
@@ -141,7 +151,6 @@ export function codexHooks(runtime: string, script: string, config?: string): Ho
           {
             type: 'command',
             command: hookCommand(runtime, script, e.name, config),
-            async: true,
             timeout: CODEX_TIMEOUT_SEC,
             additionalContextLimit: CODEX_CONTEXT_LIMIT,
           },

@@ -242,17 +242,19 @@ export function parseConfigPath(
  * 프롬프트 자체가 막히거나 사용자에게 오류가 뜬다 — 메시지 알림 하나가
  * 세션을 세우는 것은 안전망이 만드는 사고다. 진단은 stderr 로만 남긴다.
  */
-async function main(argv: readonly string[]): Promise<void> {
+export async function hookMain(argv: readonly string[]): Promise<void> {
+  await run(argv).catch((e: unknown) => {
+    process.stderr.write(`[agent-channel-mesh] 훅이 실패했다: ${String(e)}\n`)
+    // 실패해도 세션은 계속 간다. 출력이 없으면 에이전트는 그냥 지나친다.
+    process.stdout.write(JSON.stringify({ continue: true, suppressOutput: true }))
+  })
+}
+
+async function run(argv: readonly string[]): Promise<void> {
   const config = await loadConfig(parseConfigPath(argv))
   const store = new MessageStore(storeOptionsOf(config.store))
   const out = await runHook(parseEvent(argv), store)
   process.stdout.write(JSON.stringify(out))
 }
 
-if (import.meta.main) {
-  await main(process.argv.slice(2)).catch((e: unknown) => {
-    process.stderr.write(`[agent-channel-mesh] 훅이 실패했다: ${String(e)}\n`)
-    // 실패해도 세션은 계속 간다. 출력이 없으면 에이전트는 그냥 지나친다.
-    process.stdout.write(JSON.stringify({ continue: true, suppressOutput: true }))
-  })
-}
+if (import.meta.main) await hookMain(process.argv.slice(2))

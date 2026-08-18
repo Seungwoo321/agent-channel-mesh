@@ -83,13 +83,31 @@ describe('설치', () => {
     )
   })
 
-  test('Codex 는 async 로 등록하고 컨텍스트 한도를 훅 예산보다 넉넉히 잡는다', async () => {
+  test('Codex 에 async 를 달지 않는다 — 달면 훅이 목록에서 통째로 빠진다', async () => {
+    // Codex 0.147 은 async 훅을 지원하지 않고, 만나면 등록 목록에서 빼 버린
+    // 뒤 경고 한 줄만 남긴다(`hooks/list` 의 warnings). 파일에는 남아 있는데
+    // 한 번도 돌지 않으므로 눈으로는 정상으로 보인다.
+    await run()
+    expect(JSON.stringify(await readJson(codexPath()))).not.toContain('"async"')
+  })
+
+  test('Codex 컨텍스트 한도를 훅 예산보다 넉넉히 잡는다', async () => {
     const entry = (await run(), (await readJson(codexPath())).hooks.PostToolUse[0].hooks[0])
-    expect(entry.async).toBe(true)
     expect(entry.timeout).toBeGreaterThan(0)
     // 여기가 더 좁으면 Codex 가 말 중간에서 잘라 내고, 메시지 단위로 끊어 둔
     // 의미가 사라진다.
     expect(entry.additionalContextLimit).toBeGreaterThan(HOOK_CONTEXT_LIMIT)
+  })
+
+  test('Codex 조정값을 camelCase 로 쓴다', async () => {
+    // `timeout_sec` · `additional_context_limit` 이라는 이름도 바이너리에
+    // 있지만 설정 파일 파서는 그것을 읽지 않는다 — 조용히 버리고 기본값
+    // (600초 · 무제한)으로 떨어진다.
+    await run()
+    const text = JSON.stringify(await readJson(codexPath()))
+    expect(text).not.toContain('timeout_sec')
+    expect(text).not.toContain('additional_context_limit')
+    expect(text).toContain('additionalContextLimit')
   })
 
   test('Claude 는 async 키를 넣지 않는다 — 모르는 키다', async () => {

@@ -18,9 +18,10 @@ import { serve, type Delivery } from './server.js'
 import { MessageStore } from '../store/store.js'
 import { init, whoami, newChannelSecret } from './onboard.js'
 import { format } from '../identity/fingerprint.js'
+import { hookMain } from '../install/notify.js'
 
 /** 무엇을 하러 왔는가. `serve` 만 전달 방식을 요구한다. */
-export type Command = 'serve' | 'init' | 'whoami'
+export type Command = 'serve' | 'init' | 'whoami' | 'hook'
 
 export interface Args {
   readonly command: Command
@@ -38,12 +39,15 @@ export interface Args {
   readonly relayToken?: string
   /** `init`·`whoami` 에서 쓸 이름. 신뢰의 근거가 아니다 — 근거는 지문뿐이다(§9). */
   readonly label?: string
+  /** `hook` 이 그대로 넘길 인자. 훅 런타임이 `--event` 를 읽는다. */
+  readonly rest?: readonly string[]
 }
 
 const USAGE = `agent-channel-mesh
 
   init                         설정을 만든다 (시드 생성 + 0600)
   whoami                       상대에게 보낼 공개키와 내 지문을 보여준다
+  hook --event <이름>          훅 런타임. 에이전트가 부른다 (직접 부를 일은 없다)
   --delivery <push|inbox|both> 어댑터를 띄운다
 
   --config <path>   기본값 ${DEFAULT_CONFIG_PATH} (환경변수 ACM_CONFIG 로도 지정)
@@ -73,6 +77,9 @@ export function parseArgs(argv: readonly string[], env: Record<string, string | 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!
     if (arg === 'init' || arg === 'whoami') command = arg
+    // `hook` 뒤는 훅 런타임의 인자다. 여기서 해석하면 `--event` 가 «모르는
+    // 인자» 로 죽고, 훅이 죽으면 에이전트에 따라 프롬프트까지 막힌다.
+    else if (arg === 'hook') return { command: 'hook', config, rest: argv.slice(i + 1) }
     else if (arg === '--delivery') delivery = argv[++i]
     else if (arg === '--config') config = argv[++i] ?? config
     else if (arg === '--relay') relay = argv[++i]
@@ -100,6 +107,17 @@ export function parseArgs(argv: readonly string[], env: Record<string, string | 
  */
 export async function main(argv: readonly string[]): Promise<{ stop: () => Promise<void> } | undefined> {
   const args = parseArgs(argv, process.env)
+
+  // 훅은 어떤 경우에도 0 으로 끝나야 하므로 자기 오류 처리를 스스로 한다.
+  // 여기서 던지면 아래 진입점이 exit(1) 로 보내 세션을 세운다.
+  if (args.command === 'hook') {
+    // `--config` 가 `hook` **앞**에 왔으면 rest 에 없다. 그대로 넘기면 훅이
+    // 기본 경로를 읽어 다른 신원의 수신함을 보게 된다 — 자리 하나로 오배달이
+    // 나는 자리라, 여기서 이미 정해진 경로를 실어 준다 (§6.4).
+    const rest = args.rest ?? []
+    await hookMain(rest.includes('--config') ? rest : [...rest, '--config', args.config])
+    return undefined
+  }
 
   // 사람이 읽는 출력은 stdout 으로 낸다. serve 만 stdout 이 MCP 프레이밍에
   // 묶여 있고, 이 둘은 서버가 아니다.
