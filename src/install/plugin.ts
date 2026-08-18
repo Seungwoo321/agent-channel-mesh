@@ -22,7 +22,7 @@ import {
   type HookMap,
 } from './hooks.js'
 
-/** npm 에 올라간 이름. 플러그인은 레포가 아니라 이 패키지를 실행한다. */
+/** 플러그인·패키지·MCP 서버가 공유하는 이름. */
 export const PACKAGE_NAME = 'agent-channel-mesh'
 
 /**
@@ -41,18 +41,47 @@ export const PLUGIN_HOOKS = `${PLUGIN_DIR}/hooks/hooks.json`
 /** 두 에이전트가 **같이** 읽는 목록. Codex 도 `.codex-plugin/` 이 아니라 여기를 본다. */
 export const MARKETPLACE_MANIFEST = '.claude-plugin/marketplace.json'
 
+/** 번들 진입점 — 이 파일 하나를 묶어 `PLUGIN_BUNDLE` 로 낸다. */
+export const BUNDLE_ENTRY = 'src/adapter/bin.ts'
+
 /**
- * 플러그인이 훅·MCP 서버를 띄울 때 쓰는 명령.
+ * 플러그인이 실제로 실행하는 파일. 의존성이 안에 들어간 단일 파일이다.
  *
- * `${CLAUDE_PLUGIN_ROOT}` 의 소스를 직접 돌리지 않는다 — 플러그인은 클론만
- * 되고 의존성 설치는 일어나지 않아, 그 경로로 부르면 첫 실행에서 모듈을 못 찾고
- * 죽는다. 레지스트리에서 받아 캐시하는 `bunx` 가 설치 단계 없는 유일한 길이다.
- *
- * 버전을 **박는다**. `@latest` 로 두면 어느 날 레지스트리가 바뀌는 것만으로
- * 팀원들의 훅 동작이 갈리고, 그때 누가 무엇을 돌리고 있었는지 되짚을 수 없다.
+ * 플러그인은 **클론만 되고 `bun install` 이 일어나지 않는다.** 그래서 소스를
+ * 그대로 부르면 첫 import 에서 모듈을 못 찾고 죽는다. 남는 길은 둘인데,
+ * 레지스트리에서 받아 오는 것(`bunx <패키지>@<버전>`)과 의존성을 미리 묶어
+ * 두는 것이다. 후자를 쓴다 — 전자는 **핀이 둘로 갈린다.** 마켓플레이스는
+ * git ref 로 파일을 주는데 실행되는 코드는 npm 버전에서 오므로, 둘이 어긋나면
+ * "매니페스트가 선언한 것과 다른 코드가 도는" 상태가 되고 그것을 막을 장치가
+ * 설치 쪽에 없다. 번들이면 클론한 것이 곧 도는 것이라 핀이 하나다.
  */
-export function runnerCommand(version: string): string {
-  return `bunx ${PACKAGE_NAME}@${version}`
+export const PLUGIN_BUNDLE = `${PLUGIN_DIR}/dist/acm.js`
+
+/** 플러그인 루트 안에서의 번들 위치. 두 에이전트가 서로 다른 방법으로 여기에 닿는다. */
+const BUNDLE_REL = 'dist/acm.js'
+
+/**
+ * 훅 명령에서 플러그인 루트를 가리키는 변수. **두 에이전트가 같은 이름을 쓰고,
+ * 둘 다 훅 명령에서는 이것을 절대경로로 치환한다**(실측: Codex 는 `hooks/list`
+ * 가 치환된 절대경로를 돌려주고, Claude 는 MCP 인자에서 같은 치환을 한다).
+ *
+ * 훅 **명령에서만** 통한다. MCP 쪽은 {@link pluginMcp} 를 본다.
+ */
+const HOOK_ROOT_VAR = '${CLAUDE_PLUGIN_ROOT}'
+
+/**
+ * 훅을 띄울 때 쓰는 명령.
+ *
+ * 버전을 싣지 않는다 — **클론된 ref 가 곧 버전이다.** `bunx <패키지>@<버전>`
+ * 이었다면 여기에 버전을 박아야 했고(안 박으면 레지스트리가 바뀌는 것만으로
+ * 팀원들의 훅 동작이 갈린다), 그 버전과 마켓플레이스가 준 파일이 어긋날 수
+ * 있었다. 번들은 그 문제가 생기지 않는다.
+ *
+ * 경로를 따옴표로 감싼다 — 훅 명령은 셸을 거치므로 공백이 든 경로가 두 인자로
+ * 쪼개진다.
+ */
+export function runnerCommand(): string {
+  return `bun "${HOOK_ROOT_VAR}/${BUNDLE_REL}"`
 }
 
 /**
@@ -66,8 +95,8 @@ export function runnerCommand(version: string): string {
  * `async` 는 절대 넣지 않는다 — Codex 가 async 훅을 목록에서 빼 버린다.
  * 근거는 `src/install/hooks.ts` 의 {@link codexHooks} 주석에 있다.
  */
-export function pluginHooks(version: string): { hooks: HookMap } {
-  const runner = runnerCommand(version)
+export function pluginHooks(): { hooks: HookMap } {
+  const runner = runnerCommand()
   const hooks: HookMap = {}
   for (const e of HOOK_EVENTS) {
     hooks[e.name] = [
@@ -97,16 +126,25 @@ export function pluginHooks(version: string): { hooks: HookMap } {
  * Codex 는 `inbox` — 주입 경로가 아예 없다. 거기서 `push` 를 켜면 아무도
  * 구현하지 않는 capability 를 선언하는 셈이라, 알림은 훅이 맡고 본문은
  * `inbox` 툴로 꺼낸다.
+ *
+ * **번들을 가리키는 방법도 갈린다.** 인자는 셸을 거치지 않으므로 두 에이전트
+ * 각각이 무엇을 해석해 주느냐로 정해지는데, 실측하면 정반대다.
+ *
+ * - Claude 는 인자 안의 `${CLAUDE_PLUGIN_ROOT}` 를 절대경로로 치환한다.
+ * - Codex 는 **아무것도 치환하지 않고 환경변수로도 주지 않는다.** `${...}`
+ *   형태 일곱 가지를 전부 넣어 봐도 문자 그대로 자식에게 건너간다. 대신
+ *   `cwd` 를 플러그인 루트 기준으로 풀어 주므로, `cwd: "."` + 상대 경로가
+ *   Codex 에서 번들에 닿는 유일한 길이다.
+ *
+ * 반대로 붙이면 어느 쪽도 오류를 내지 않는다 — MCP 서버가 조용히 못 뜨고,
+ * 툴만 없는 상태가 된다. 그래서 모양을 하나로 합치지 않는다.
  */
-export function pluginMcp(version: string, delivery: 'both' | 'inbox'): unknown {
-  return {
-    mcpServers: {
-      [PACKAGE_NAME]: {
-        command: 'bunx',
-        args: [`${PACKAGE_NAME}@${version}`, '--delivery', delivery],
-      },
-    },
-  }
+export function pluginMcp(agent: 'claude' | 'codex'): unknown {
+  const server =
+    agent === 'claude'
+      ? { command: 'bun', args: [`${HOOK_ROOT_VAR}/${BUNDLE_REL}`, '--delivery', 'both'] }
+      : { command: 'bun', args: [BUNDLE_REL, '--delivery', 'inbox'], cwd: '.' }
+  return { mcpServers: { [PACKAGE_NAME]: server } }
 }
 
 const AUTHOR = { name: 'Seungwoo321', url: 'https://github.com/Seungwoo321' }
@@ -132,7 +170,7 @@ export function claudeManifest(version: string): unknown {
     repository: REPO,
     license: 'Apache-2.0',
     keywords: KEYWORDS,
-    ...(pluginMcp(version, 'both') as object),
+    ...(pluginMcp('claude') as object),
     hooks: './hooks/hooks.json',
   }
 }
@@ -154,7 +192,7 @@ export function codexManifest(version: string): unknown {
     repository: REPO,
     license: 'Apache-2.0',
     keywords: KEYWORDS,
-    ...(pluginMcp(version, 'inbox') as object),
+    ...(pluginMcp('codex') as object),
     interface: {
       displayName: 'Agent Channel Mesh',
       shortDescription: '다른 사람의 에이전트와 종단 간 암호화로 대화한다.',
@@ -199,6 +237,29 @@ export function marketplaceManifest(version: string): unknown {
   }
 }
 
+/**
+ * 번들을 만든다. **압축하지 않는다** — 남의 기계에서 도는 암호 코드라,
+ * 읽어서 확인할 수 있다는 것이 크기보다 중요하다.
+ *
+ * 출력이 결정적이라 커밋된 번들과 여기서 나온 것이 바이트 단위로 같아야
+ * 한다. 그 대조는 테스트가 한다.
+ */
+export async function buildBundle(): Promise<void> {
+  const out = await Bun.build({
+    entrypoints: [BUNDLE_ENTRY],
+    target: 'bun',
+    format: 'esm',
+    minify: false,
+    sourcemap: 'none',
+  })
+  if (!out.success) throw new AggregateError(out.logs, '번들 빌드 실패')
+  const [artifact] = out.outputs
+  if (artifact === undefined || out.outputs.length !== 1) {
+    throw new Error(`번들이 파일 하나로 안 나왔다: ${out.outputs.length}개`)
+  }
+  await Bun.write(PLUGIN_BUNDLE, artifact)
+}
+
 if (import.meta.main) {
   const { version } = (await Bun.file('package.json').json()) as { version: string }
   const write = async (path: string, value: unknown): Promise<void> => {
@@ -208,5 +269,7 @@ if (import.meta.main) {
   await write(CLAUDE_MANIFEST, claudeManifest(version))
   await write(CODEX_MANIFEST, codexManifest(version))
   await write(MARKETPLACE_MANIFEST, marketplaceManifest(version))
-  await write(PLUGIN_HOOKS, pluginHooks(version))
+  await write(PLUGIN_HOOKS, pluginHooks())
+  await buildBundle()
+  process.stdout.write(`썼다: ${PLUGIN_BUNDLE}\n`)
 }

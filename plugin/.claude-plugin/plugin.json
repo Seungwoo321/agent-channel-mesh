@@ -17,9 +17,9 @@
   ],
   "mcpServers": {
     "agent-channel-mesh": {
-      "command": "bunx",
+      "command": "bun",
       "args": [
-        "agent-channel-mesh@0.1.0",
+        "${CLAUDE_PLUGIN_ROOT}/dist/acm.js",
         "--delivery",
         "both"
       ]

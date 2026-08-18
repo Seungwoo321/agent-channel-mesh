@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bunx agent-channel-mesh@0.1.0 hook --event SessionStart",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/acm.js\" hook --event SessionStart",
             "timeout": 10,
             "additionalContextLimit": 12000
           }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bunx agent-channel-mesh@0.1.0 hook --event UserPromptSubmit",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/acm.js\" hook --event UserPromptSubmit",
             "timeout": 10,
             "additionalContextLimit": 12000
           }
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bunx agent-channel-mesh@0.1.0 hook --event PostToolUse",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/acm.js\" hook --event PostToolUse",
             "timeout": 10,
             "additionalContextLimit": 12000
           }

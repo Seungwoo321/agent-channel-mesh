@@ -6,6 +6,11 @@ out
 dist
 *.tgz
 
+# 플러그인 번들만 예외 — 배포되는 실체다.
+# 플러그인은 클론만 되고 의존성 설치가 일어나지 않아, 이 파일이 빠지면
+# 설치한 사람 쪽에서 훅도 MCP 서버도 첫 실행에서 죽는다.
+!plugin/dist
+
 # code coverage
 coverage
 *.lcov
