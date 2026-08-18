@@ -16,6 +16,7 @@ import type { MessageStore, StoredMessage } from '../store/store.js'
 import { toHex } from '../identity/fingerprint.js'
 import { renderBundle } from './bundle.js'
 import { whoami } from './onboard.js'
+import { addTaint } from '../policy/taint.js'
 
 /** MCP `tools/list` 에 그대로 실을 수 있는 형태. */
 export interface ToolSpec {
@@ -241,6 +242,11 @@ async function handleInbox(
     for (const m of await ctx.store.read(id, limit)) if (m.direction === 'in') shown.push(m)
   }
   if (shown.length === 0) return { text: '새 메시지가 없다.' }
+
+  // 이미 전달된 것도 포함해 오염을 찍는다 (§8.3) — 지금 이 호출로 그 말이
+  // 컨텍스트에 다시 들어가기 때문이다. 여기가 비면 사용자가 오염을 푼 뒤
+  // `inbox` 를 부르는 것이 그대로 우회로가 된다.
+  await addTaint(ctx.store.directory, shown)
 
   // 보여준 것은 전달된 것이다 (§6.6). 표시하지 않으면 훅 안전망이 같은
   // 메시지를 다시 들이밀어, 세션에는 두 번 도착한 것처럼 보인다.

@@ -20,12 +20,19 @@ import {
   PLUGIN_HOOKS,
   PLUGIN_BUNDLE,
   PLUGIN_DIR,
+  PLUGIN_SKILLS,
+  SETUP_SKILL,
   PACKAGE_NAME,
 } from '../src/install/plugin.js'
 import { HOOK_EVENTS } from '../src/install/hooks.js'
+import { SEND_TOOL, CHANNELS_TOOL, INBOX_TOOL, WHOAMI_TOOL } from '../src/adapter/tools.js'
+import { SETUP_TOOL } from '../src/adapter/setup.js'
+import { DEFAULT_CONFIG_PATH } from '../src/adapter/config.js'
+import { GRANTS, DEFAULT_PEER_GRANT } from '../src/policy/authority.js'
 
 const pkg = (await Bun.file('package.json').json()) as { version: string; name: string }
 const version = pkg.version
+const skill = await Bun.file(SETUP_SKILL).text()
 
 async function committed(path: string): Promise<unknown> {
   return await Bun.file(path).json()
@@ -193,6 +200,73 @@ describe('MCP 서버 — 번들에 닿는 길이 에이전트마다 다르다', 
     // Codex 는 주입 경로가 아예 없다.
     expect(serverOf(claudeManifest(version)).args.at(-1)).toBe('both')
     expect(serverOf(codexManifest(version)).args.at(-1)).toBe('inbox')
+  })
+})
+
+describe('셋업 스킬', () => {
+  // 스킬 본문은 산문이라 생성기가 만들지 않는다(`src/install/plugin.ts` 참조).
+  // 그래서 생성-대조가 못 지키는 두 자리를 여기서 지킨다 — 두 에이전트의
+  // 로더가 요구하는 프론트매터 형식, 그리고 본문이 적어 둔 이름·경로가 코드와
+  // 같은지.
+  const front = (): Record<string, unknown> => {
+    const end = skill.indexOf('\n---', 4)
+    return Bun.YAML.parse(skill.slice(4, end)) as Record<string, unknown>
+  }
+
+  test('매니페스트가 가리키는 자리에 있다', async () => {
+    // 경로가 어긋나면 오류가 아니라 침묵이다 — 스킬만 목록에서 사라진다.
+    for (const path of [CLAUDE_MANIFEST, CODEX_MANIFEST]) {
+      const declared = ((await committed(path)) as { skills: string }).skills
+      expect(`${PLUGIN_DIR}/${declared.replace(/^\.\/|\/$/g, '')}`).toBe(PLUGIN_SKILLS)
+    }
+    expect(await Bun.file(SETUP_SKILL).exists()).toBe(true)
+  })
+
+  test('프론트매터가 열리고 닫힌다', () => {
+    // Codex 의 플러그인 검증기는 여는 구분자로 시작하지 않거나 닫히지 않은
+    // SKILL.md 를 등록 자체에서 뺀다.
+    expect(skill.startsWith('---\n')).toBe(true)
+    expect(skill.indexOf('\n---', 4)).toBeGreaterThan(0)
+  })
+
+  test('이름과 설명이 비어 있지 않다', () => {
+    // 둘 중 하나라도 비면 Codex 가 스킬을 거부한다. 설명은 모델이 이 스킬을
+    // 부를지 정하는 유일한 근거이기도 하다.
+    const f = front()
+    expect(f['name']).toBe('mesh-setup')
+    expect((f['description'] as string).length).toBeGreaterThan(40)
+  })
+
+  test('디렉토리 이름이 선언한 이름과 같다', () => {
+    // Claude 는 디렉토리 이름으로, Codex 는 프론트매터로 부른다. 갈리면 한쪽
+    // 에이전트에서만 안 뜬다.
+    expect(SETUP_SKILL).toContain(`/${front()['name'] as string}/SKILL.md`)
+  })
+
+  test('모델 호출을 막지 않는다', () => {
+    // 켜져 있으면 사람이 슬래시로 부를 때만 뜬다 — 설정이 없어 헤매는 순간에
+    // 바로 이 스킬이 걸려야 하는데, 그 경로가 사라진다.
+    for (const key of ['disable-model-invocation', 'disable_model_invocation']) {
+      expect(front()[key] ?? false).toBe(false)
+    }
+  })
+
+  test('부르라고 적어 둔 툴이 전부 실제로 있다', () => {
+    // 툴 이름을 코드에서 바꾸면 스킬은 없는 툴을 부르라고 시킨다. 모델은
+    // 그것을 오류가 아니라 "권한이 없나 보다" 로 읽고 다른 길을 찾아 헤맨다.
+    for (const t of [SETUP_TOOL, SEND_TOOL, CHANNELS_TOOL, INBOX_TOOL, WHOAMI_TOOL]) {
+      expect(skill).toContain(`\`${t.name}\``)
+    }
+  })
+
+  test('설정 경로가 코드와 같다', () => {
+    expect(skill).toContain(DEFAULT_CONFIG_PATH)
+  })
+
+  test('권한 등급이 코드와 같다', () => {
+    // 스킬이 없는 등급을 적으면 사용자가 그대로 쓰고 설정 로드가 실패한다.
+    for (const g of GRANTS) expect(skill).toContain(`\`${g}\``)
+    expect(skill).toContain(`"default": "${DEFAULT_PEER_GRANT}"`)
   })
 })
 

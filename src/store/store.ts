@@ -33,6 +33,7 @@
 import { chmod, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { withLock } from './lock.js'
+import { isGrant, type Authority, type Grant } from '../policy/authority.js'
 
 /** 메시지가 흐른 방향. 내가 보낸 것과 받은 것을 섞지 않는다. */
 export type Direction = 'in' | 'out'
@@ -122,6 +123,25 @@ export interface StoredMessage {
   /** 내가 디스크에 남긴 시각(ms). 보관 기한은 이 값으로 센다. */
   readonly storedAt: number
   readonly hops?: number
+  /**
+   * 이 말이 나냐 동료냐 (§8).
+   *
+   * 판정 근거는 축(`axis`)이 아니라 **검증된 서명자**다 — 축은 내가 손으로
+   * 적은 채널 분류값이고, 서명자는 Ed25519 검증을 통과한 값이다. 같은
+   * 채널에 내 다른 에이전트와 동료가 함께 있을 수 있으므로 판정은 메시지
+   * 단위여야 한다.
+   *
+   * 수신에만 있다. 버전 1·2 파일에는 없고, 없으면 `peer` 로 읽는다 —
+   * 모르는 것을 나로 보는 쪽이 위험하다.
+   */
+  readonly authority?: Authority
+  /**
+   * 이 말이 내 기계에서 갖는 권한 (§8.2). 도착 시점의 정책으로 정해진다.
+   *
+   * 도착 시점에 박는 이유는 `mute` 와 같다 — 나중에 정책이 바뀌어도 그때
+   * 무엇을 허용한 채로 주입했는지는 바뀌지 않아야 한다.
+   */
+  readonly grant?: Grant
   /** 답하는 대상의 messageId (§6.2). 스레드가 아니라 본문 안의 참조다. */
   readonly replyTo?: string
   /**
@@ -241,6 +261,17 @@ export class MessageStore {
   }
 
   /**
+   * 저장 디렉토리(`~` 가 펴진 절대경로).
+   *
+   * 권한 오염 상태(§8.3)가 이 자리에 같이 놓인다. 소비자가 경로를 다시
+   * 계산하지 않게 하려고 연다 — 설정에서 두 번 유도하면 어댑터와 훅이 서로
+   * 다른 파일을 보게 되고, 그러면 한쪽이 찍은 오염을 다른 쪽이 못 본다.
+   */
+  get directory(): string {
+    return this.dir
+  }
+
+  /**
    * 한 건을 남긴다.
    *
    * 쓰는 김에 기한 경과분을 **파일에서 실제로 지운다**(§6.3). 표시만 지우면
@@ -266,6 +297,8 @@ export class MessageStore {
       sentAt: requireTime(record.sentAt, 'sentAt'),
       storedAt: this.now(),
       ...(record.hops !== undefined ? { hops: requireHops(record.hops) } : {}),
+      ...(record.authority !== undefined ? { authority: requireAuthority(record.authority) } : {}),
+      ...(record.grant !== undefined ? { grant: requireGrant(record.grant) } : {}),
       ...(record.replyTo !== undefined ? { replyTo: requireHex(record.replyTo, 'replyTo') } : {}),
       ...(record.mute !== undefined ? { mute: requireMute(record.mute) } : {}),
       // 수신은 아직 세션에 닿지 않았고, 발신은 애초에 주입 대상이 아니다 (§6.6).
@@ -679,6 +712,12 @@ function parseFile(parsed: unknown, file: string, channelId: string): StoredMess
       sentAt,
       storedAt,
       ...(r.hops !== undefined ? { hops: requireHops(r.hops) } : {}),
+      // 버전 1·2 파일에는 없다. 없으면 동료로 읽힌다(`recordAuthority`) —
+      // 옛 파일이 조용히 내 권한을 얻는 일이 없어야 한다.
+      ...(r.authority !== undefined
+        ? { authority: requireAuthority(r.authority, `messages[${i}].authority`) }
+        : {}),
+      ...(r.grant !== undefined ? { grant: requireGrant(r.grant, `messages[${i}].grant`) } : {}),
       ...(replyTo !== undefined ? { replyTo: requireHex(replyTo, `messages[${i}].replyTo`) } : {}),
       ...(r.mute !== undefined ? { mute: requireMute(r.mute, `messages[${i}].mute`) } : {}),
       delivered: r.delivered === true,
@@ -753,6 +792,22 @@ function requireDirection(value: unknown): Direction {
 function requireAxis(value: unknown): Axis {
   if (value !== 'external' && value !== 'internal' && value !== 'local') {
     throw new Error(`axis 는 external·internal·local 중 하나다: ${String(value)}`)
+  }
+  return value
+}
+
+// 축과 같은 톤으로 좁힌다. 모르는 값을 통과시키면 그 순간 이 필드는 권한
+// 판정의 근거가 아니라 발신자가 고르는 문자열이 된다.
+function requireAuthority(value: unknown, what = 'authority'): Authority {
+  if (value !== 'self' && value !== 'peer') {
+    throw new Error(`${what} 는 self·peer 중 하나다: ${String(value)}`)
+  }
+  return value
+}
+
+function requireGrant(value: unknown, what = 'grant'): Grant {
+  if (!isGrant(value)) {
+    throw new Error(`${what} 은 read·write·execute 중 하나다: ${String(value)}`)
   }
   return value
 }

@@ -20,6 +20,8 @@ import { Channel } from '../channel/channel.js'
 import { SpeechControl, type Decision, type SpeechOptions } from '../channel/speech.js'
 import { RelayClient } from '../relay/client.js'
 import type { Axis } from '../store/store.js'
+import { toKey } from '../identity/fingerprint.js'
+import { grantOf, OPEN_POLICY, type Authority, type Grant, type Policy } from '../policy/authority.js'
 
 /**
  * 축을 안 정했을 때의 기본값 (§6.4).
@@ -46,6 +48,20 @@ export interface Inbound {
   readonly senderKeyId: Uint8Array
   /** 발신자의 사람용 이름. 멤버 목록에 있으면 채워진다 — 신뢰의 근거는 아니다. */
   readonly senderLabel?: string
+  /**
+   * 발신자 지문의 정규 표기 (§9). 정책을 거는 키이자, 사람이 대역 외로
+   * 대조한 바로 그 값이다. 멤버 목록에 없는 발신자면 비어 있다.
+   */
+  readonly senderFingerprint?: string
+  /**
+   * 이 말이 나냐 동료냐 (§8).
+   *
+   * 채널 축이 아니라 **검증된 서명자**로 정한다 — 축은 채널 전체에 걸린
+   * 분류값이라 한 채널에 내 에이전트와 동료가 섞이면 답을 못 낸다.
+   */
+  readonly authority: Authority
+  /** 이 말이 내 기계에서 갖는 권한 (§8.2). */
+  readonly grant: Grant
   readonly text: string
   readonly messageId: Uint8Array
   /** 발신자가 실은 시각(ms). 발신자가 정하는 값이라 신뢰 대상이 아니다. */
@@ -81,6 +97,16 @@ export interface NodeOptions {
   readonly relay?: RelayClient
   /** 지금 시각. 테스트에서만 주입한다. */
   readonly now?: () => number
+  /**
+   * 내 다른 에이전트들의 지문 (§8.1). 정규 표기(`fingerprint.toKey`).
+   *
+   * 여기 있는 서명자의 말만 `self` 다. 비어 있으면 도착한 모든 말이 동료의
+   * 말이고, 그것이 안전한 기본값이다 — 내 코덱스를 여기 적는 것은 "이 키는
+   * 사실상 나"라는 명시적 선언이어야 한다.
+   */
+  readonly selfFingerprints?: Iterable<string>
+  /** 동료별 권한 정책 (§8.2). 생략하면 전원 `read`. */
+  readonly policy?: Policy
 }
 
 /** 채널 하나에 대한 로컬 상태 묶음. */
@@ -105,11 +131,15 @@ export class MeshNode {
   private readonly relay?: RelayClient
   private readonly now: () => number
   private readonly channels = new Map<string, Joined>()
+  private readonly selfFingerprints: ReadonlySet<string>
+  private readonly policy: Policy
 
   constructor(options: NodeOptions) {
     this.identity = options.identity
     this.relay = options.relay
     this.now = options.now ?? Date.now
+    this.selfFingerprints = new Set(options.selfFingerprints ?? [])
+    this.policy = options.policy ?? OPEN_POLICY
   }
 
   /**
@@ -231,10 +261,19 @@ export class MeshNode {
     const { text, hops } = splitHops(raw)
     const sender = joined.channel.get(got.envelope.header.senderKeyId)
 
+    // 서명 검증을 통과한 뒤에야 지문을 본다. 여기 오기 전에 판정하면 위조된
+    // 발신자에게 권한을 주는 것이고, 그게 §8 이 막으려는 단 하나의 사고다.
+    const fingerprint = sender === undefined ? undefined : toKey(sender.fingerprint)
+    const authority: Authority =
+      fingerprint !== undefined && this.selfFingerprints.has(fingerprint) ? 'self' : 'peer'
+
     return {
       channelId: tag,
       senderKeyId: got.envelope.header.senderKeyId,
       senderLabel: sender?.label,
+      ...(fingerprint !== undefined ? { senderFingerprint: fingerprint } : {}),
+      authority,
+      grant: grantOf(this.policy, authority, fingerprint),
       text,
       messageId: got.envelope.header.messageId,
       sentAt: got.envelope.header.timestamp,

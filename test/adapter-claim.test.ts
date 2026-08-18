@@ -474,6 +474,9 @@ function pushNode() {
         channelId,
         senderKeyId: new Uint8Array([0xde, 0xad, 0xbe, 0xef]),
         senderLabel: 'alice',
+        // 동료가 보낸 것으로 둔다 — 이 스텁이 흉내 내는 것은 인바운드다 (§8).
+        authority: 'peer',
+        grant: 'read',
         text,
         messageId,
         sentAt: BigInt(Date.now()),

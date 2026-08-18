@@ -33,6 +33,7 @@ import {
 } from './tools.js'
 import { ClaudeAdapter, CAPABILITIES, INSTRUCTIONS } from './claude.js'
 import { hex } from './bundle.js'
+import { addTaint } from '../policy/taint.js'
 
 export const SERVER_NAME = 'agent-channel-mesh'
 export const SERVER_VERSION = '0.1.0'
@@ -188,6 +189,10 @@ export async function serve(options: ServeOptions): Promise<{ stop: () => Promis
 
     let delivered: readonly string[] = []
     try {
+      // 오염은 주입 **전에** 찍는다 (§8.3). 뒤에 찍으면 세션에는 들어갔는데
+      // 오염은 안 찍힌 창이 생기고, 그 창의 말이 그대로 툴 호출을 연다.
+      // 여기서 던지면 주입 자체가 일어나지 않고 아래에서 선점이 풀린다.
+      await addTaint(store.directory, batch)
       delivered = await adapter!.inject(batch)
     } finally {
       // 주입이 던져도 정리한다. 안 하면 선점한 묶음이 기한(기본 60초)까지
@@ -248,6 +253,11 @@ export async function serve(options: ServeOptions): Promise<{ stop: () => Promis
         text: m.text,
         sentAt: Number(m.sentAt),
         hops: m.hops,
+        // 권한도 축과 같은 이유로 저장 시점에 박힌다 (§8). 나중에 정책이
+        // 바뀌어도 "이 말을 무슨 권한으로 들였는지"는 바뀌면 안 되고,
+        // 정본을 읽는 `inbox`·훅이 그 값을 그대로 봐야 판정이 한 벌이다.
+        authority: m.authority,
+        grant: m.grant,
         // 발화 판정은 **도착 시점에만** 구할 수 있다 (§7). 여기서 안 남기면
         // 정본을 읽는 `inbox` 툴이 남의 대화를 응답 대상처럼 내준다.
         ...(m.decision.speak ? {} : { mute: m.decision.reason }),

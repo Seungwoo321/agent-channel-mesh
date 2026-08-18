@@ -37,6 +37,19 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/dist/acm.js\" hook --event PreToolUse",
+            "timeout": 10,
+            "additionalContextLimit": 12000
+          }
+        ]
+      }
     ]
   }
 }

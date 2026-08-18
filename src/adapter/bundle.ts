@@ -21,6 +21,7 @@
  * 없다. 모델에게 도달하는 형태 자체가 이미 시간순 묶음이어야 한다.
  */
 import type { StoredMessage } from '../store/store.js'
+import { DEFAULT_PEER_GRANT, recordAuthority, recordGrant } from '../policy/authority.js'
 
 /**
  * 묶음 머리에 붙는 지시 (§6.1).
@@ -130,7 +131,24 @@ function renderOne(m: StoredMessage, markNew: boolean): string {
   // 「읽되 응답하지 않는다」), 응답 여부는 모델이 이걸 보고 정한다.
   const mute = m.mute === undefined ? '' : ` [응답 안 함: ${m.mute}]`
   const fresh = markNew && !m.delivered ? ' [새 메시지]' : ''
-  return `<${senderOf(m)}@${m.channelId} · ${when}>${mute}${fresh}\n${m.text}`
+  return `<${senderOf(m)}@${m.channelId} · ${when}>${authorityOf(m)}${mute}${fresh}\n${m.text}`
+}
+
+/**
+ * 이 한 건이 내 기계에서 갖는 자리 (§8).
+ *
+ * 동료의 말은 **공유**다 — 위아래가 아니라 옆의 동료가 알려 준 것이고, 그래서
+ * 표시도 "지시가 왔다"가 아니라 "동료가 공유했다"로 적는다. 나누는 것은 사람의
+ * 지위가 아니라 **내 기계에 대한 권한**이다.
+ *
+ * 이 표시는 **강제가 아니다.** 실제로 막는 것은 `PreToolUse` 훅이고(§8.3),
+ * 여기 문자열은 모델이 자기 상황을 알게 하는 예의다 — 지시문으로 정책을
+ * 주입하면 압축될 때 사라지므로(§6.1) 표시에 기대지 않는다.
+ */
+function authorityOf(m: StoredMessage): string {
+  if (recordAuthority(m) === 'self') return ' [내 에이전트]'
+  const grant = recordGrant(m)
+  return grant === DEFAULT_PEER_GRANT ? ' [동료 공유]' : ` [동료 공유 · 허용 ${grant}]`
 }
 
 /** 절대 시각만 쓴다 (§6.1). 상대 시각은 며칠 밀린 묶음에서 오독을 부른다. */

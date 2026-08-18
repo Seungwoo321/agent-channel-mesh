@@ -204,7 +204,7 @@ describe('2. 유실', () => {
   test('모르는 이벤트로 불려도 메시지를 삼키지 않는다', async () => {
     await store.append(inbound({ text: '중요한 말' }))
 
-    // Codex 의 SessionEnd, Claude 의 PreToolUse/Notification 처럼 KNOWN_EVENTS
+    // Codex 의 SessionEnd, Claude 의 Notification 처럼 KNOWN_EVENTS
     // 밖의 이름으로 훅이 불리는 경우다. 설치기가 등록하지 않아도, 사용자가
     // 손으로 다른 이벤트에 걸거나 에이전트가 이름을 바꾸면 그대로 재현된다.
     const out = await runHook('SessionEnd', store)
@@ -429,11 +429,11 @@ describe('5. 남의 설정', () => {
   })
 
   test('우리가 등록하지 않는 이벤트의 모르는 값은 그대로 둔다', async () => {
-    await seedClaude({ hooks: { Stop: { a: 1 }, PreToolUse: 'legacy-string-form' } })
+    await seedClaude({ hooks: { Stop: { a: 1 }, Notification: 'legacy-string-form' } })
     await runInstall()
     const doc = await readJson(claudePath())
     expect(doc.hooks.Stop).toEqual({ a: 1 })
-    expect(doc.hooks.PreToolUse).toBe('legacy-string-form')
+    expect(doc.hooks.Notification).toBe('legacy-string-form')
   })
 
   test('우리가 등록할 이벤트가 배열이 아니면 덮지 않고 던진다', async () => {

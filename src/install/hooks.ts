@@ -46,18 +46,23 @@ export const CODEX_TIMEOUT_SEC = 10
 export const CODEX_CONTEXT_LIMIT = 12_000
 
 /**
- * 등록할 이벤트.
+ * 등록할 이벤트. 두 에이전트가 이 목록 하나를 공유한다 — 따로 적으면 설치
+ * 경로마다 알림·강제가 갈린다.
  *
- * §6.6 의 세 상황을 각각 덮는다. 하나로 줄이면 그 하나가 안 도는 상황이
- * 통째로 사각이 된다.
+ * 앞의 셋은 §6.6 의 세 상황을 각각 덮는다. 하나로 줄이면 그 하나가 안 도는
+ * 상황이 통째로 사각이 된다.
  * - `SessionStart` — 세션을 열었을 때 밀려 있던 것
  * - `UserPromptSubmit` — 유휴 세션이 다음 프롬프트를 받을 때
  * - `PostToolUse` — 긴 턴이 도는 중(턴 경계를 기다리지 않는다)
+ *
+ * `PreToolUse` 는 알림이 아니라 권한 강제다(§8.3). 모든 툴을 봐야 하므로
+ * matcher 가 `.*` 다 — 목록을 좁히면 빠진 툴이 그대로 우회로가 된다.
  */
 export const HOOK_EVENTS: readonly { readonly name: string; readonly matcher?: string }[] = [
   { name: 'SessionStart', matcher: 'startup|resume|clear|compact' },
   { name: 'UserPromptSubmit' },
   { name: 'PostToolUse', matcher: '.*' },
+  { name: 'PreToolUse', matcher: '.*' },
 ]
 
 /**

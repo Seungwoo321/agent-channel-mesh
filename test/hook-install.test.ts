@@ -18,6 +18,7 @@ import {
   parseFlag,
   checkArgs,
   HOOK_MARKER,
+  HOOK_EVENTS,
 } from '../src/install/hooks.js'
 import { HOOK_CONTEXT_LIMIT } from '../src/install/notify.js'
 
@@ -60,6 +61,7 @@ describe('설치', () => {
     for (const doc of [await readJson(claudePath()), await readJson(codexPath())]) {
       expect(Object.keys(doc.hooks).sort()).toEqual([
         'PostToolUse',
+        'PreToolUse',
         'SessionStart',
         'UserPromptSubmit',
       ])
@@ -131,15 +133,15 @@ describe('여러 번 돌려도 같다', () => {
   test('두 번 돌려도 항목이 늘지 않는다', async () => {
     await run()
     await run()
-    expect(ours(await readJson(claudePath()))).toHaveLength(3)
-    expect(ours(await readJson(codexPath()))).toHaveLength(3)
+    expect(ours(await readJson(claudePath()))).toHaveLength(HOOK_EVENTS.length)
+    expect(ours(await readJson(codexPath()))).toHaveLength(HOOK_EVENTS.length)
   })
 
   test('레포를 옮겨도 옛 항목이 남지 않는다', async () => {
     await run()
     await install({ home, script: '/moved/src/install/notify.ts', runtime: RUNTIME })
     const doc = await readJson(claudePath())
-    expect(ours(doc)).toHaveLength(3)
+    expect(ours(doc)).toHaveLength(HOOK_EVENTS.length)
     // 남아 있으면 같은 메시지가 두 번 뜬다.
     const cmds = doc.hooks.SessionStart.flatMap((e: any) => e.hooks.map((h: any) => h.command))
     expect(cmds.some((c: string) => c.includes('/repo/'))).toBe(false)

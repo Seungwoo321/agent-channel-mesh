@@ -20,6 +20,7 @@
 import { loadConfig, storeOptionsOf, expandHome, DEFAULT_CONFIG_PATH } from '../adapter/config.js'
 import { MessageStore, type StoredMessage } from '../store/store.js'
 import { renderBundle } from '../adapter/bundle.js'
+import { addTaint, clearTaint, readTaint, verdict } from '../policy/taint.js'
 
 /**
  * 한 번에 실어 보내는 최대 건수.
@@ -68,12 +69,24 @@ const KNOWN_EVENTS = new Set([
   'Stop',
 ])
 
+/**
+ * 권한을 강제하는 이벤트 (§8.3). 여기서는 **드레인하지 않는다** — 막히는
+ * 호출에 메시지를 실으면 그 메시지가 어디에도 도달하지 못한 채 사라진다.
+ */
+export const GATE_EVENT = 'PreToolUse'
+
 export interface HookOutput {
   readonly continue: true
   readonly suppressOutput: true
   readonly hookSpecificOutput?: {
     readonly hookEventName: string
-    readonly additionalContext: string
+    readonly additionalContext?: string
+    /**
+     * `deny` 만 쓴다 — Codex 0.147 은 `allow`·`ask` 를 만나면 판정을 오류로
+     * 버린다. 통과는 판정을 안 싣는 것으로 표현한다.
+     */
+    readonly permissionDecision?: 'deny'
+    readonly permissionDecisionReason?: string
   }
 }
 
@@ -116,6 +129,11 @@ export async function collect(store: MessageStore): Promise<string> {
     // 일부만 찍힌 채 죽을 수 있고, 그렇게 찍힌 것은 다음 훅에도 안 나온다 —
     // 안전망이 삼킨 것이다. 표시 실패의 대가는 다음 훅에서 한 번 더 뜨는
     // 것뿐이다. 중복은 보이고 유실은 안 보인다(§6.3).
+    // 오염은 **표시보다 먼저** 찍는다 (§8.3). 뒤집히면 세션에는 들어갔는데
+    // 오염은 안 찍힌 창이 생기고, 그 창의 말이 그대로 툴 호출을 연다.
+    // 여기서 던지면 바깥 catch 가 선점을 풀어 다음 훅에 다시 나온다.
+    await addTaint(store.directory, keep)
+
     const ids = keep.map(m => m.id)
     await store.markDelivered(ids).catch(async (e: unknown) => {
       warn('전달 표시에 실패했다')(e)
@@ -199,6 +217,10 @@ function warn(what: string): (e: unknown) => void {
 export async function runHook(event: string, store: MessageStore): Promise<HookOutput> {
   if (!KNOWN_EVENTS.has(event)) return { continue: true, suppressOutput: true }
 
+  // 오염을 푸는 유일한 자리다(§8.3). **집기 전에** 푼다 — 뒤에 풀면 이번에
+  // 같이 실린 동료 발화까지 지워져 오염 없이 세션에 들어간다.
+  if (event === 'UserPromptSubmit') await clearTaint(store.directory)
+
   const text = await collect(store)
   if (text === '') {
     return { continue: true, suppressOutput: true }
@@ -207,6 +229,104 @@ export async function runHook(event: string, store: MessageStore): Promise<HookO
     continue: true,
     suppressOutput: true,
     hookSpecificOutput: { hookEventName: event, additionalContext: text },
+  }
+}
+
+/** 통과 = 판정을 싣지 않는 것. */
+const PASS: HookOutput = { continue: true, suppressOutput: true }
+
+/**
+ * 거부. 막는 것은 이 툴 호출 하나이고 세션은 계속 간다.
+ *
+ * **`continue: false` 를 쓰지 않는다** — Codex 0.147 은 그 필드를 만나면
+ * 판정을 통째로 버려, 막았다고 믿는데 안 막힌 상태가 된다.
+ */
+function denial(reason: string): HookOutput {
+  return {
+    continue: true,
+    suppressOutput: true,
+    hookSpecificOutput: {
+      hookEventName: GATE_EVENT,
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    },
+  }
+}
+
+/**
+ * 툴 호출 하나를 판정한다 (§8.3).
+ *
+ * 오염이 없으면 stdin 을 읽지 않는다 — 툴 호출마다 도는 자리라 평상시 비용이
+ * 상태 파일 하나여야 한다. 판정 못 하는 경우는 전부 거부다: 페이로드를 못
+ * 읽게 만드는 것이 곧 우회 수단이 되면 안 된다.
+ */
+export async function runGate(
+  store: MessageStore,
+  readInput: () => Promise<string | undefined>,
+): Promise<HookOutput> {
+  let taint
+  try {
+    taint = await readTaint(store.directory)
+  } catch (e) {
+    // 깨진 상태 파일을 "없음"으로 읽으면 파일 하나를 망가뜨리는 것으로 강제가 풀린다.
+    return denial(
+      `권한 상태 파일을 읽지 못했다 (${String(e)}). 판정할 수 없으므로 막는다. ` +
+        `${store.directory}/authority.state.json 을 확인해라 — 사용자가 한 줄 입력하면 상태가 정리된다.`,
+    )
+  }
+  if (taint === undefined) return PASS
+
+  const raw = await readInput().catch(() => undefined)
+  const tool = raw === undefined ? undefined : toolNameOf(raw)
+  if (tool === undefined) {
+    return denial(
+      '동료가 공유한 말이 이 턴에 들어와 있는데, 어떤 툴을 부르려는지 읽지 못했다. ' +
+        '무엇인지 모르는 호출은 막는다. 사용자가 한 줄이라도 입력하면 풀린다.',
+    )
+  }
+
+  const v = verdict(taint, tool)
+  return v.deny ? denial(v.reason) : PASS
+}
+
+/**
+ * 훅 페이로드에서 툴 이름을 꺼낸다.
+ *
+ * 두 에이전트 모두 **snake_case** 로 준다(`tool_name`) — 실측으로 확인된
+ * 값이라 그것을 먼저 본다. `toolName` 도 받아 주는 것은 추측이 아니라 관용이고,
+ * 어느 쪽도 없으면 `undefined` 다(= 거부).
+ */
+export function toolNameOf(raw: string): string | undefined {
+  let doc: unknown
+  try {
+    doc = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (typeof doc !== 'object' || doc === null) return undefined
+  const o = doc as Record<string, unknown>
+  const name = typeof o.tool_name === 'string' ? o.tool_name : o.toolName
+  if (typeof name !== 'string' || name.trim() === '') return undefined
+  return name
+}
+
+/**
+ * 훅 페이로드를 읽는다. 못 읽으면 `undefined`.
+ *
+ * 상한을 둔다 — stdin 이 안 닫히면 툴 호출마다 훅이 매달리고, 그건 알림
+ * 하나가 세션을 세우는 사고다. 시간이 지나면 "모르는 호출"로 떨어지고,
+ * 오염 중에는 그것이 거부다.
+ */
+async function readPayload(timeoutMs = 2000): Promise<string | undefined> {
+  if (process.stdin.isTTY === true) return undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<undefined>(resolve => {
+    timer = setTimeout(() => resolve(undefined), timeoutMs)
+  })
+  try {
+    return await Promise.race([Bun.stdin.text(), timeout])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
   }
 }
 
@@ -265,12 +385,15 @@ export const SETUP_HINT =
 
 async function run(argv: readonly string[]): Promise<void> {
   const path = parseConfigPath(argv)
+  const event = parseEvent(argv)
 
   // 설정이 없는 것은 첫 실행이다(§11.1). 조용히 지나가면 훅이 깔린 줄도
   // 모른 채 며칠이 가므로, 시작할 때 한 번만 알린다. 파일이 있는데 못 읽는
   // 경우는 아래에서 그대로 던진다 — 권한 검사(§11)를 삼키면 안 된다.
+  //
+  // 신원이 없으면 채널도 없고 동료 발화도 없다 — 막을 것이 없으므로 게이트도
+  // 여기서 함께 통과한다.
   if (!(await Bun.file(expandHome(path)).exists())) {
-    const event = parseEvent(argv)
     const out: HookOutput =
       event === 'SessionStart'
         ? {
@@ -278,14 +401,15 @@ async function run(argv: readonly string[]): Promise<void> {
             suppressOutput: true,
             hookSpecificOutput: { hookEventName: event, additionalContext: SETUP_HINT },
           }
-        : { continue: true, suppressOutput: true }
+        : PASS
     process.stdout.write(JSON.stringify(out))
     return
   }
 
   const config = await loadConfig(path)
   const store = new MessageStore(storeOptionsOf(config.store))
-  const out = await runHook(parseEvent(argv), store)
+  const out =
+    event === GATE_EVENT ? await runGate(store, () => readPayload()) : await runHook(event, store)
   process.stdout.write(JSON.stringify(out))
 }
 

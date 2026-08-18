@@ -16,6 +16,8 @@ import { Channel } from '../channel/channel.js'
 import { MeshNode } from '../node/node.js'
 import { RelayClient } from '../relay/client.js'
 import type { Axis, StoreOptions } from '../store/store.js'
+import { fingerprint, parseKey, toHex, toKey } from '../identity/fingerprint.js'
+import { buildPolicy, GRANTS } from '../policy/authority.js'
 
 /** 기본 설정 위치. `ACM_CONFIG` 로 덮어쓴다. */
 export const DEFAULT_CONFIG_PATH = '~/.agent-channel-mesh/config.json'
@@ -91,9 +93,35 @@ export function storeOptionsOf(store: StoreConfig | undefined): StoreOptions {
   }
 }
 
+/**
+ * 발신자별 권한 정책 (§8.2).
+ *
+ * 프롬프트 파일(`CLAUDE.md` 류)이 아니라 이 파일에 두는 이유는 두 가지다 —
+ * 프롬프트 룰은 컨텍스트가 압축되면 사라지고(§6.1), 모델이 무시해도 막을
+ * 방법이 없다. 여기 적힌 값은 훅이 읽어 **도구 호출 자체를 거부**한다.
+ */
+export interface PolicyConfig {
+  /** 정책에 없는 동료의 권한. 생략하면 `read`. */
+  readonly default?: string
+  /** 지문(§9) → 권한. 지문은 `toHex` 표기 그대로(공백 포함) 붙여 넣어도 된다. */
+  readonly peers?: Readonly<Record<string, string>>
+}
+
 export interface Config {
   /** 신원 시드 32B (hex). 이것만 있으면 신원 전체가 재파생된다 (§10.2). */
   readonly seed: string
+  /**
+   * 내 다른 에이전트들의 지문 (§8.1).
+   *
+   * 여기 적은 서명자의 말만 내 말(`self`)로 친다 — 내 코덱스가 내 클로드에게
+   * 시키는 경로가 이것이다. **동료의 지문을 여기 적지 않는다.** 적는 순간
+   * 그 사람은 내 기계에 대해 나와 같은 권한을 갖는다.
+   *
+   * 저장은 정규 표기(공백 없는 소문자 hex)로 한다 — `validate` 가 편다.
+   */
+  readonly self?: readonly string[]
+  /** 동료별 권한 정책 (§8.2). 없으면 전원 `read`. */
+  readonly policy?: PolicyConfig
   /** 릴레이 base URL. 없으면 로컬 전용 — 아무것도 주고받지 못한다. */
   readonly relay?: string
   /**
@@ -209,14 +237,63 @@ export function validate(raw: unknown): Config {
   })
 
   const store = validateStore(o.store)
+  const self = validateSelf(o.self)
+  const policy = validatePolicy(o.policy)
 
   return {
     seed: o.seed,
     relay: o.relay as string | undefined,
     relayToken: o.relayToken as string | undefined,
     channels,
+    ...(self ? { self } : {}),
+    ...(policy ? { policy } : {}),
     ...(store ? { store } : {}),
   }
+}
+
+/**
+ * 내 에이전트 지문 목록을 검사해 정규 표기로 편다 (§8.1).
+ *
+ * 오타를 통과시키지 않는다 — 지문 한 글자가 틀리면 그 에이전트는 조용히
+ * 동료로 떨어지고, 사용자는 내 코덱스가 왜 막히는지 알 방법이 없다.
+ * 반대 방향(동료가 나로 잘못 들어오는 것)은 오타로는 일어나지 않는다.
+ */
+function validateSelf(raw: unknown): readonly string[] | undefined {
+  if (raw === undefined) return undefined
+  if (!Array.isArray(raw)) throw new Error('self 는 지문 hex 문자열의 배열이어야 한다 (§8.1)')
+  return raw.map((v, i) => {
+    if (typeof v !== 'string') throw new Error(`self[${i}] 가 문자열이 아니다`)
+    try {
+      return parseKey(v)
+    } catch (e) {
+      throw new Error(`self[${i}] 가 지문이 아니다: ${e instanceof Error ? e.message : String(e)}`)
+    }
+  })
+}
+
+/**
+ * 권한 정책을 검사한다 (§8.2).
+ *
+ * `buildPolicy` 를 태워 **같은 검사**를 쓴다. 여기서 따로 검사하면 설정
+ * 로드는 통과하고 노드 조립에서만 죽는 값이 생기고, 그 차이는 훅과 어댑터가
+ * 서로 다른 판정을 하는 자리로 돌아온다.
+ */
+function validatePolicy(raw: unknown): PolicyConfig | undefined {
+  if (raw === undefined) return undefined
+  if (typeof raw !== 'object' || raw === null) throw new Error('policy 는 객체여야 한다')
+  const p = raw as Record<string, unknown>
+  if (p.default !== undefined && typeof p.default !== 'string') {
+    throw new Error(`policy.default 는 ${GRANTS.join('·')} 중 하나다`)
+  }
+  if (p.peers !== undefined && (typeof p.peers !== 'object' || p.peers === null)) {
+    throw new Error('policy.peers 는 지문 → 권한 객체여야 한다')
+  }
+  const config: PolicyConfig = {
+    ...(p.default !== undefined ? { default: p.default } : {}),
+    ...(p.peers !== undefined ? { peers: p.peers as Record<string, string> } : {}),
+  }
+  buildPolicy(config)
+  return config
 }
 
 /**
@@ -273,13 +350,21 @@ export async function buildNode(config: Config): Promise<{ node: MeshNode; ident
         ...(config.relayToken !== undefined ? { relayToken: config.relayToken } : {}),
       })
     : undefined
-  const node = new MeshNode({ identity, relay })
+  const self = new Set(config.self ?? [])
+  const node = new MeshNode({
+    identity,
+    relay,
+    selfFingerprints: self,
+    policy: buildPolicy(config.policy),
+  })
 
-  for (const c of config.channels) {
+  for (const [i, c] of config.channels.entries()) {
     const channel = new Channel({ secret: fromHex(c.secret, 32), name: c.name })
     for (const m of c.members) {
+      const signPublicKey = fromHex(m.sign, 32)
+      assertInternalMember(c, i, signPublicKey, m.label, self, identity)
       channel.add({
-        signPublicKey: fromHex(m.sign, 32),
+        signPublicKey,
         kemPublicKey: fromHex(m.kem, 32),
         label: m.label,
       })
@@ -293,4 +378,39 @@ export async function buildNode(config: Config): Promise<{ node: MeshNode; ident
   }
 
   return { node, identity }
+}
+
+/**
+ * 내부 축 채널에 남이 끼어 있지 않은지 본다 (§6.4 · §8.1).
+ *
+ * `axis: internal|local` 은 "이 채널은 내 다른 세션들뿐"이라는 선언이고, 그
+ * 선언에 기대어 §7 홉·예산이 느슨해진다. 그런데 그 채널에 동료가 한 명
+ * 들어 있으면 그 사람의 말이 같은 느슨함을 함께 얻는다 — 선언과 실제가
+ * 어긋나는데 화면에는 아무 표시도 나지 않는다.
+ *
+ * 그래서 **로드 시점에 죽인다.** 여기서 통과시키고 도착 시점에 판정하면,
+ * 이미 §7 이 헐거워진 뒤라 판정이 늦다.
+ *
+ * 내 신원은 예외다 — 내 공개키를 멤버로 적는 설정도 유효하다.
+ */
+function assertInternalMember(
+  c: ChannelConfig,
+  index: number,
+  signPublicKey: Uint8Array,
+  label: string | undefined,
+  self: ReadonlySet<string>,
+  identity: Identity,
+): void {
+  if (c.axis === undefined || c.axis === 'external') return
+
+  const fp = fingerprint(signPublicKey)
+  const key = toKey(fp)
+  if (key === toKey(identity.fingerprint)) return
+  if (self.has(key)) return
+
+  throw new Error(
+    `channels[${index}] 는 axis: ${c.axis} 인데 내 것이 아닌 멤버가 있다` +
+      `${label !== undefined ? ` (${label})` : ''} — 지문 ${toHex(fp)}. ` +
+      `내 다른 에이전트라면 그 지문을 self 에 적고, 동료라면 이 채널의 axis 를 external 로 둔다 (§8.1).`,
+  )
 }

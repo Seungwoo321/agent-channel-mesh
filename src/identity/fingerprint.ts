@@ -59,6 +59,35 @@ export function toHex(fp: Uint8Array): string {
 }
 
 /**
+ * 정책 키로 쓰는 정규 표기 — 공백 없는 소문자 hex 32자.
+ *
+ * 설정 파일이 발신자별 권한을 이 값으로 건다(§8.2). 라벨이 아니라 지문인
+ * 이유는 라벨이 상대가 정하는 값이라 신뢰 대상이 아니어서고(§9), key id 가
+ * 아닌 이유는 사람이 대역 외로 대조하는 값이 지문이어서다 — 정책을 거는
+ * 사람이 자기 눈으로 확인한 그 값이어야 한다.
+ *
+ * `toHex` 와 같은 값이고 공백만 없다. 잘라 쓰지 않는다.
+ */
+export function toKey(fp: Uint8Array): string {
+  return Array.from(fp, b => b.toString(16).padStart(2, '0')).join('')
+}
+
+/**
+ * 사람이 적은 지문을 정규 표기로 되돌린다.
+ *
+ * `toHex` 는 4자씩 띄우므로 설정 파일에 그대로 붙여 넣은 값에는 공백이
+ * 있다. 그것을 오타로 처리하면 정책이 조용히 안 걸린다 — 공백과 대문자는
+ * 받아 주고, 길이·문자만 엄격히 본다.
+ */
+export function parseKey(text: string): string {
+  const key = text.replace(/\s+/g, '').toLowerCase()
+  if (!new RegExp(`^[0-9a-f]{${FINGERPRINT_BYTES * 2}}$`).test(key)) {
+    throw new Error(`지문은 hex ${FINGERPRINT_BYTES * 2}자여야 한다 (받은 값: ${text})`)
+  }
+  return key
+}
+
+/**
  * 사람이 대조하는 화면 표현 — 4단어씩 4줄 + hex 한 줄.
  *
  * 전체 대조를 자연스러운 행동으로 만드는 것이 목적이다 (§9).

@@ -23,6 +23,7 @@ import {
   HOOK_CONTEXT_LIMIT,
 } from '../src/install/notify.js'
 import { DEFAULT_CONFIG_PATH } from '../src/adapter/config.js'
+import { readTaint } from '../src/policy/taint.js'
 
 let dir: string
 let store: MessageStore
@@ -218,5 +219,40 @@ describe('parseConfigPath (§6.4)', () => {
 
   test('공백뿐인 ACM_CONFIG 는 없는 것과 같다', () => {
     expect(parseConfigPath([], { ACM_CONFIG: '   ' })).toBe(DEFAULT_CONFIG_PATH)
+  })
+})
+
+/**
+ * 전달과 오염 (§8.3)
+ *
+ * 훅이 세션에 실어 보내는 것은 곧 동료의 말이 컨텍스트에 들어가는 것이다.
+ * 그 순간 오염이 찍혀 있지 않으면, 그 말이 그대로 툴 호출을 연다.
+ */
+describe('전달하면 오염이 찍힌다', () => {
+  test('동료의 말을 실으면 그 권한으로 오염이 남는다', async () => {
+    await store.append(inbound({ authority: 'peer', grant: 'read' }))
+    await runHook('PostToolUse', store)
+    expect(await readTaint(store.directory)).toMatchObject({ grant: 'read', from: 'bob' })
+  })
+
+  test('내 다른 에이전트의 말은 오염을 남기지 않는다', async () => {
+    await store.append(inbound({ axis: 'internal', authority: 'self', grant: 'execute' }))
+    await runHook('PostToolUse', store)
+    expect(await readTaint(store.directory)).toBeUndefined()
+  })
+
+  test('사용자가 입력하면 풀린다 — 그것이 "내가 시킨 것"의 유일한 신호다', async () => {
+    await store.append(inbound({ authority: 'peer', grant: 'read' }))
+    await runHook('PostToolUse', store)
+    await runHook('UserPromptSubmit', store)
+    expect(await readTaint(store.directory)).toBeUndefined()
+  })
+
+  test('푸는 것이 집는 것보다 먼저다 — 같이 실린 말까지 지우면 안 된다', async () => {
+    // 이번 프롬프트에 딸려 들어온 동료 발화는 오염 없이 세션에 들어가면 안 된다.
+    await store.append(inbound({ authority: 'peer', grant: 'read' }))
+    const out = await runHook('UserPromptSubmit', store)
+    expect(out.hookSpecificOutput?.additionalContext).toContain('안녕')
+    expect(await readTaint(store.directory)).toMatchObject({ grant: 'read' })
   })
 })

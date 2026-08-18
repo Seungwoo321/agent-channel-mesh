@@ -38,6 +38,19 @@ export const CLAUDE_MANIFEST = `${PLUGIN_DIR}/.claude-plugin/plugin.json`
 export const CODEX_MANIFEST = `${PLUGIN_DIR}/.codex-plugin/plugin.json`
 export const PLUGIN_HOOKS = `${PLUGIN_DIR}/hooks/hooks.json`
 
+/**
+ * 스킬 디렉토리. 매니페스트에 적는 경로이자 파일이 실제로 있는 자리다.
+ *
+ * 매니페스트·훅과 달리 **스킬 본문은 여기서 생성하지 않는다** — 산문이라
+ * 코드에서 파생되는 값이 없고, 문자열 리터럴에 가둬 두면 고치는 사람이
+ * 마크다운 대신 TypeScript 를 편집하게 된다. 대신 드리프트가 실제로 나는
+ * 자리(프론트매터 형식, 스킬이 부르라고 적어 둔 툴 이름, 설정 경로)를
+ * `test/plugin.test.ts` 가 코드와 대조한다.
+ */
+const SKILLS_REL = './skills/'
+export const PLUGIN_SKILLS = `${PLUGIN_DIR}/skills`
+export const SETUP_SKILL = `${PLUGIN_SKILLS}/mesh-setup/SKILL.md`
+
 /** 두 에이전트가 **같이** 읽는 목록. Codex 도 `.codex-plugin/` 이 아니라 여기를 본다. */
 export const MARKETPLACE_MANIFEST = '.claude-plugin/marketplace.json'
 
@@ -172,6 +185,7 @@ export function claudeManifest(version: string): unknown {
     keywords: KEYWORDS,
     ...(pluginMcp('claude') as object),
     hooks: './hooks/hooks.json',
+    skills: SKILLS_REL,
   }
 }
 
@@ -193,6 +207,7 @@ export function codexManifest(version: string): unknown {
     license: 'Apache-2.0',
     keywords: KEYWORDS,
     ...(pluginMcp('codex') as object),
+    skills: SKILLS_REL,
     interface: {
       displayName: 'Agent Channel Mesh',
       shortDescription: '다른 사람의 에이전트와 종단 간 암호화로 대화한다.',
