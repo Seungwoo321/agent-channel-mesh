@@ -14,6 +14,7 @@
  */
 import { createHandler } from './http.js'
 import { MemoryStore, DEFAULT_TTL_MS, DEFAULT_MAX_QUEUE } from './store.js'
+import { MIN_TOKEN_CHARS, type PostAuth } from './post-auth.js'
 
 /** 기본 포트. 흔한 개발 포트와 겹치지 않는 값을 고른다. */
 export const DEFAULT_PORT = 8787
@@ -43,6 +44,10 @@ const USAGE = `agent-channel-mesh 릴레이
   --host <addr>    기본 127.0.0.1 (외부 공개는 0.0.0.0)
   --ttl <ms>       봉투 보관 기간, 기본 ${DEFAULT_TTL_MS} (7일)
   --max-queue <n>  수신자당 큐 상한, 기본 ${DEFAULT_MAX_QUEUE}
+
+  ACM_RELAY_TOKEN  쓰기 토큰 (환경변수, 최소 ${MIN_TOKEN_CHARS}자 — \`openssl rand -hex 32\`).
+                   루프백 밖으로 열려면 반드시 있어야 한다 (§10.13).
+                   플래그가 아닌 이유는 \`ps\` 에 그대로 찍히기 때문이다.
 
   POST /post            봉투를 올린다
   GET  /fetch/<key id>  수신함을 비우며 가져간다
@@ -181,10 +186,18 @@ function required<T>(raw: string | undefined, flag: string, parse: (t: string | 
  *
  * 돌려주는 것에 실제 포트가 들어 있다 — `--port 0` 으로 띄우면 OS 가
  * 고르므로, 테스트가 그 값을 알아야 접속할 수 있다.
+ *
+ * 쓰기 정책을 인자로 받는다. 여기서 환경변수를 읽어 스스로 정하면 같은
+ * 판단이 진입점(`src/server.ts`)과 두 군데에 생기고, 두 경로의 보안이 갈리는
+ * 순간은 배포한 뒤에야 드러난다. 판단은 `selectPostAuth` 한 곳이 갖는다.
  */
-export function start(args: ServeArgs): { port: number; stop: () => void; url: string } {
+export function start(
+  args: ServeArgs,
+  postAuth: PostAuth,
+): { port: number; stop: () => void; url: string } {
   const handler = createHandler({
     store: new MemoryStore({ ttlMs: args.ttlMs, maxQueue: args.maxQueue }),
+    postAuth,
   })
   let server: ReturnType<typeof Bun.serve>
   try {

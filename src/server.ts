@@ -17,6 +17,7 @@
 import { keepalive } from './relay/keepalive.js'
 import { createHandler } from './relay/http.js'
 import { selectStore } from './relay/select-store.js'
+import { selectPostAuth } from './relay/post-auth.js'
 import { bindError, parseArgs } from './relay/serve.js'
 
 /**
@@ -33,7 +34,8 @@ function boot(): ReturnType<typeof Bun.serve> {
   // `모르는 인자` 로 함수를 통째로 못 뜨게 만들 수 있다. 거기서는 환경변수만 읽는다.
   const args = parseArgs(serverless ? [] : process.argv.slice(2), process.env)
   const { store, durable } = selectStore(process.env, args)
-  const handler = createHandler({ store })
+  const postAuth = selectPostAuth(process.env, { serverless, host: args.host })
+  const handler = createHandler({ store, postAuth })
 
   const options = {
     // 배포 환경에서는 주소를 우리가 정하지 않는다. Vercel 문서는 `port`/
@@ -72,11 +74,12 @@ function boot(): ReturnType<typeof Bun.serve> {
         (durable
           ? `저장소는 Upstash 다.\n`
           : `저장소는 메모리다 — 이 프로세스가 죽으면 대기 중인 봉투가 사라진다.\n`) +
-        (args.host === '127.0.0.1'
-          ? `이 기계에서만 접근할 수 있다. 외부에 열려면 --host 0.0.0.0 을 준다.\n`
-          : `⚠️  외부에 열려 있다. 수신함 조회는 서명으로 인증되지만(§10.12),\n` +
-            `   봉투 전송은 누구나 할 수 있고 메타데이터(key id·채널 태그·크기)는\n` +
-            `   보는 쪽에 그대로 드러난다. docs/architecture.md §10.12\n`),
+        ('open' in postAuth
+          ? `쓰기는 인증하지 않는다 — 이 기계에서만 닿을 수 있어서다.\n` +
+            `외부에 열려면 ACM_RELAY_TOKEN 을 만들고 --host 0.0.0.0 을 준다.\n`
+          : `쓰기에는 ACM_RELAY_TOKEN 이 필요하다 (§10.13).\n` +
+            `⚠️  메타데이터(key id·채널 태그·크기)는 릴레이를 보는 쪽에 드러난다.\n` +
+            `   docs/architecture.md §10.8\n`),
     )
   }
 

@@ -17,6 +17,7 @@ import {
   HEADER_TIME,
   HEADER_NONCE,
 } from './fetch-auth.js'
+import { verifyPostAuth, type PostAuth } from './post-auth.js'
 
 /** 조회에 필요한 헤더 목록. 이름은 `fetch-auth` 가 단일 정의한다. */
 const AUTH_HEADERS = [HEADER_KEM, HEADER_SIGN, HEADER_SIG, HEADER_TIME, HEADER_NONCE].join(', ')
@@ -51,6 +52,14 @@ export interface HealthBody {
 export interface HttpOptions extends RelayOptions {
   /** 폴링 한 번에 돌려줄 최대 개수. */
   readonly fetchLimit?: number
+  /**
+   * 쓰기 정책 (§10.13). **선택 항목이 아니다.**
+   *
+   * 기본값을 두면 그 기본값이 곧 이 릴레이의 보안이 되고, 호출자는 자기가
+   * 무엇을 고른 적 없다는 사실조차 모른다. 열어 두는 것도 고르는 것이다 —
+   * `{ open: true }` 라고 적게 한다. `selectPostAuth` 가 그 판단을 갖는다.
+   */
+  readonly postAuth: PostAuth
 }
 
 /**
@@ -71,13 +80,17 @@ export interface HttpOptions extends RelayOptions {
  * - 인증이 서명 공개키를 릴레이에 넘기므로 릴레이는 §9 지문을 계산할 수 있다.
  *   메시지 내용에는 여전히 닿지 못한다.
  *
- * `POST /post` 는 인증하지 않는다. 큐에 넣는 것은 남의 것을 뺏는 동작이
- * 아니고(드레인과 달리 아무것도 사라지지 않는다), 봉투는 이미 자체 서명돼
- * 있어 수신자가 발신자를 확인한다 (§8). 릴레이가 더 볼 것이 없다.
+ * `POST /post` 는 배포 단위의 공유 토큰으로 인증한다 (§10.13). 여기서 물을
+ * 수 있는 것은 "이 릴레이를 쓸 자격이 있는가" 뿐이다 — 채널 멤버십은 종단 간
+ * 사실이라 릴레이가 판단할 근거가 없다(§5.1·§8). 그 한 겹이 필요한 이유는
+ * 큐가 상한에서 **가장 오래된 것부터 버리기** 때문이다: 아무나 쓸 수 있으면
+ * 남의 key id 로 큐를 채우는 것만으로 아직 못 받은 봉투를 밀어낼 수 있고,
+ * 당한 쪽에는 그 유실이 보이지 않는다 (`post-auth.ts`).
  */
 export function createHandler(options: HttpOptions): (req: Request) => Promise<Response> {
   const relay = new Relay(options)
   const fetchLimit = options.fetchLimit
+  const postAuth = options.postAuth
 
   return async function handle(req: Request): Promise<Response> {
     const url = new URL(req.url)
@@ -88,6 +101,14 @@ export function createHandler(options: HttpOptions): (req: Request) => Promise<R
     }
 
     if (req.method === 'POST' && path === '/post') {
+      // 본문을 읽기 **전에** 끝낸다. 통과하지 못한 요청에는 저장소도, 파싱도,
+      // 최대 1MB 짜리 본문을 메모리로 끌어오는 일도 없어야 한다 — 인증을
+      // 나중에 하면 그 앞 단계가 전부 무료 공격면이 된다.
+      const allowed = verifyPostAuth(postAuth, req.headers)
+      if (!allowed.ok) {
+        return json<ErrorBody>({ ok: false, reason: allowed.reason, detail: allowed.detail }, 401)
+      }
+
       const body = new Uint8Array(await req.arrayBuffer())
       const result = await relay.post(body)
       if (!result.ok) {

@@ -8,6 +8,14 @@
 import { test, expect, describe } from 'bun:test'
 import { parseArgs, start, DEFAULT_PORT } from '../src/relay/serve.js'
 import { DEFAULT_TTL_MS, DEFAULT_MAX_QUEUE } from '../src/relay/store.js'
+import type { PostAuth } from '../src/relay/post-auth.js'
+
+/**
+ * 여기 테스트가 보는 것은 기동과 인자 해석이지 쓰기 인증이 아니다 —
+ * 정책은 `post-auth.test.ts` 가 덮는다. 그래도 **명시해야 넘어간다**는 것이
+ * `start()` 가 정책을 인자로 받는 이유다.
+ */
+const OPEN: PostAuth = { open: true }
 
 describe('인자', () => {
   test('기본값은 루프백이다 — 큐가 인증되지 않으므로 공개는 명시여야 한다', () => {
@@ -131,7 +139,7 @@ describe('인자', () => {
 
 describe('실행', () => {
   test('뜬 서버가 health 에 응답한다', async () => {
-    const server = start({ port: 0, host: '127.0.0.1', ttlMs: DEFAULT_TTL_MS, maxQueue: 10 })
+    const server = start({ port: 0, host: '127.0.0.1', ttlMs: DEFAULT_TTL_MS, maxQueue: 10 }, OPEN)
     try {
       const res = await fetch(`http://127.0.0.1:${server.port}/health`)
       expect(res.status).toBe(200)
@@ -142,7 +150,7 @@ describe('실행', () => {
   })
 
   test('port 0 이면 OS 가 고른 실제 포트를 돌려준다', () => {
-    const server = start({ port: 0, host: '127.0.0.1', ttlMs: DEFAULT_TTL_MS, maxQueue: 10 })
+    const server = start({ port: 0, host: '127.0.0.1', ttlMs: DEFAULT_TTL_MS, maxQueue: 10 }, OPEN)
     try {
       expect(server.port).toBeGreaterThan(0)
       expect(server.url).toContain(String(server.port))
@@ -164,7 +172,7 @@ describe('실행', () => {
         ttlMs: DEFAULT_TTL_MS,
         maxQueue: 10,
         origin: { host: 'flag', port: 'flag' },
-      })
+      }, OPEN)
     } catch (e) {
       thrown = e
     }
@@ -181,11 +189,11 @@ describe('실행', () => {
 
   test('출처가 없으면 기본값으로 설명한다', () => {
     // 직접 조립한 `ServeArgs` 에는 출처가 없다. 없는 정보를 지어내지 않는다.
-    expect(() => start({ port: 0, host: ' ', ttlMs: DEFAULT_TTL_MS, maxQueue: 10 })).toThrow(/기본값/)
+    expect(() => start({ port: 0, host: ' ', ttlMs: DEFAULT_TTL_MS, maxQueue: 10 }, OPEN)).toThrow(/기본값/)
   })
 
   test('모르는 경로는 404 다', async () => {
-    const server = start({ port: 0, host: '127.0.0.1', ttlMs: DEFAULT_TTL_MS, maxQueue: 10 })
+    const server = start({ port: 0, host: '127.0.0.1', ttlMs: DEFAULT_TTL_MS, maxQueue: 10 }, OPEN)
     try {
       const res = await fetch(`http://127.0.0.1:${server.port}/nope`)
       expect(res.status).toBe(404)
@@ -195,7 +203,7 @@ describe('실행', () => {
   })
 
   test('stop 뒤에는 연결이 되지 않는다', async () => {
-    const server = start({ port: 0, host: '127.0.0.1', ttlMs: DEFAULT_TTL_MS, maxQueue: 10 })
+    const server = start({ port: 0, host: '127.0.0.1', ttlMs: DEFAULT_TTL_MS, maxQueue: 10 }, OPEN)
     const port = server.port
     server.stop()
     // 포트가 풀릴 때까지 아주 짧게 기다린다.

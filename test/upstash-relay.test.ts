@@ -90,7 +90,7 @@ function authHeaders(who: Identity): Record<string, string> {
 test('봉투가 Upstash 를 지나 왕복하고 복호화된다', async () => {
   const { db, ttl, fetchImpl } = fakeRedis()
   const store = new UpstashStore({ url: 'https://f.io', token: 't', fetch: fetchImpl, ttlMs: 7 * 24 * 3600_000 })
-  const server = Bun.serve({ port: 0, fetch: createHandler({ store }) })
+  const server = Bun.serve({ port: 0, fetch: createHandler({ store, postAuth: { open: true } }) })
   const base = `http://127.0.0.1:${server.port}`
 
   try {

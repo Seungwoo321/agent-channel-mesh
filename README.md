@@ -59,7 +59,14 @@ Codex 에도 주입 메서드가 있지만(`app-server` 의 `turn/steer`) 세션
 bun run src/server.ts                 # http://127.0.0.1:8787
 ```
 
-기본은 루프백이라 이 기계에서만 닿는다. 다른 기계와 대화하려면 `--host 0.0.0.0` 으로 연다.
+기본은 루프백이라 이 기계에서만 닿는다. 다른 기계와 대화하려면 **쓰기 토큰을 만들고** `--host 0.0.0.0` 으로 연다.
+
+```bash
+export ACM_RELAY_TOKEN=$(openssl rand -hex 32)   # 참여자에게 이 값을 나눠 준다
+bun run src/server.ts --host 0.0.0.0
+```
+
+토큰 없이 루프백 밖으로 뜨려고 하면 기동에서 죽는다. 아무나 올릴 수 있는 릴레이는 **남의 수신함을 채워 아직 못 받은 메시지를 큐 밖으로 밀어낼 수 있고**, 당한 쪽에는 그 유실이 보이지 않기 때문이다. 우회 플래그는 없다 — 열려면 토큰을 만든다.
 
 저장소가 메모리이므로 이 프로세스가 죽으면 대기 중인 봉투가 사라진다. 상시 운용은 [배포](#배포) 참조.
 
@@ -69,6 +76,13 @@ bun run src/server.ts                 # http://127.0.0.1:8787
 
 ```bash
 bun run src/adapter/bin.ts init --relay http://127.0.0.1:8787 --label alice
+```
+
+릴레이가 쓰기 토큰을 요구하면 환경변수로 함께 준다 — `init` 이 설정 파일에 옮겨 적는다. 플래그가 아닌 이유는 `ps` 에 그대로 찍히기 때문이다.
+
+```bash
+ACM_RELAY_TOKEN=<릴레이 운영자에게 받은 값> \
+  bun run src/adapter/bin.ts init --relay https://relay.example --label alice
 ```
 
 시드를 만들고 `~/.agent-channel-mesh/config.json` 을 `0600` 으로 쓴다. 그리고 두 가지를 출력한다 — 상대에게 보낼 공개키 블록과, 내 지문이다.
@@ -103,6 +117,7 @@ bun run src/adapter/bin.ts whoami --label alice
 {
   "seed": "…",                       // init 이 만든다. 이것만 있으면 신원이 재파생된다
   "relay": "https://relay.example",
+  "relayToken": "…",                 // 그 릴레이가 요구할 때만. 없으면 생략한다
   "channels": [{
     "secret": "<채널 비밀 hex>",
     "members": [{ "label": "bob", "sign": "…", "kem": "…" }],
@@ -150,12 +165,15 @@ vercel link                                    # 프로젝트를 연결한다
 vercel env add UPSTASH_REDIS_REST_URL          # Upstash 콘솔의 REST URL
 vercel env add UPSTASH_REDIS_REST_TOKEN        # 같은 화면의 REST 토큰
 vercel env add CRON_SECRET                     # 임의의 16자 이상 문자열
+vercel env add ACM_RELAY_TOKEN                  # openssl rand -hex 32 — 참여자에게 나눠 준다
 vercel deploy --prod
 ```
 
 배포판이 실행하는 것은 로컬과 **같은 파일**(`src/server.ts`)이고, 라우팅도 같은 핸들러가 한다 — 라우팅을 배포용으로 다시 만들면 두 경로의 동작이 갈리고 그 차이는 배포한 뒤에야 드러난다. 다른 것은 저장소뿐이다: 자격이 있으면 Upstash, 없으면 메모리이며, **서버리스에서 자격이 없으면 기동 시 죽는다**(인스턴스마다 메모리가 갈려 봉투가 조용히 사라지므로).
 
-> **신규 프로젝트의 첫 배포는 preview 로 요청해도 production 이 된다.** 승격할 production 이 아직 없기 때문이다. 릴레이는 누구나 닿는 공개 엔드포인트이고 `POST /post` 에는 인증이 없으므로, "preview 니까 안전하다"고 가정하면 안 된다. 환경변수를 먼저 넣고 배포한다.
+`ACM_RELAY_TOKEN` 도 마찬가지로 서버리스에서는 없으면 죽는다. 배포된 릴레이는 누구나 닿는 공개 주소이고, 주소를 우리가 고르지도 못하기 때문이다.
+
+> **신규 프로젝트의 첫 배포는 preview 로 요청해도 production 이 된다.** 승격할 production 이 아직 없기 때문이다. "preview 니까 안전하다"고 가정하면 안 된다 — 환경변수를 먼저 넣고 배포한다.
 
 붙었는지 확인한다.
 
@@ -199,8 +217,11 @@ Cron 스케줄의 **타임존은 항상 UTC** 다. `0 21 * * 0` 은 일요일 21
 **수신함은 서명으로 인증된다**
 폴링 요청은 **두 공개키**(KEM·서명)와 서명을 함께 싣고, 릴레이는 `key id == keyIdOf(KEM 공개키, 서명 공개키)` 와 서명·시각만 확인한다. key id 가 두 키를 함께 해시한 값이라, 제시된 서명키가 그 큐 주인의 것임이 key id 계산만으로 증명된다 — 릴레이가 매핑을 저장하지 않아도 되는 이유이고, 남의 KEM 공개키를 아는 채널 동료조차 자기 서명키를 붙여 남의 큐를 비울 수 없는 이유다. 자세한 것은 [docs/architecture.md](docs/architecture.md) §10.12.
 
+**봉투를 올리려면 릴레이 토큰이 필요하다**
+공개 주소로 뜬 릴레이는 `Authorization: Bearer` 를 요구한다. 막는 것은 기밀이 아니라 가용성이다 — 아무나 올릴 수 있으면 남의 수신함을 쓰레기로 채워 **아직 못 받은 진짜 메시지를 큐 밖으로 밀어낼 수 있다.** 이 토큰은 배포 단위이고 **채널 접근 제어가 아니다** — 토큰을 가진 쪽도 아무 채널에나 올릴 수 있으며, 그것을 막는 것은 수신자의 검증이다. 자세한 것은 [docs/architecture.md](docs/architecture.md) §10.13.
+
 **로컬에는 평문이 남는다**
-릴레이는 읽지 못하고 7일 뒤 지우지만, 받은 쪽의 로컬 저장소에는 복호화된 대화가 남는다 — 그래야 밀린 메시지를 종합해 보고하고(§6.1) 지난 대화를 볼 수 있다. 파일 권한은 `0600` 이고, 보관 기한과 채널 단위 삭제를 사용자가 정한다. 자세한 것은 [docs/architecture.md](docs/architecture.md) §6.3 · §10.13.
+릴레이는 읽지 못하고 7일 뒤 지우지만, 받은 쪽의 로컬 저장소에는 복호화된 대화가 남는다 — 그래야 밀린 메시지를 종합해 보고하고(§6.1) 지난 대화를 볼 수 있다. 파일 권한은 `0600` 이고, 보관 기한과 채널 단위 삭제를 사용자가 정한다. 자세한 것은 [docs/architecture.md](docs/architecture.md) §6.3 · §10.14.
 
 ## 요구 사항
 

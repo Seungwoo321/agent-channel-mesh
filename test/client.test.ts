@@ -36,7 +36,7 @@ function hex(bytes: Uint8Array): string {
 
 /** 핸들러를 fetch 처럼 보이게 감싼다. 네트워크 없이 진짜 릴레이를 쓴다. */
 function wired() {
-  const handle = createHandler({ store: new MemoryStore() })
+  const handle = createHandler({ store: new MemoryStore(), postAuth: { open: true } })
   const fetch = ((input: string | URL | Request, init?: RequestInit) =>
     handle(new Request(input as string, init))) as typeof globalThis.fetch
   return {
@@ -118,6 +118,48 @@ describe('실패', () => {
   })
 })
 
+describe('릴레이 쓰기 토큰 (§10.13)', () => {
+  const TOKEN = 'c'.repeat(40)
+
+  /** 토큰을 요구하는 릴레이. 헤더가 무엇으로 왔는지도 남긴다. */
+  function guarded() {
+    const seen: (string | null)[] = []
+    const handle = createHandler({ store: new MemoryStore(), postAuth: { token: TOKEN } })
+    const fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      const req = new Request(input as string, init)
+      if (req.method === 'POST') seen.push(req.headers.get('Authorization'))
+      return handle(req)
+    }) as typeof globalThis.fetch
+    return { seen, fetch }
+  }
+
+  test('토큰을 주면 Bearer 로 실어 보낸다', async () => {
+    const { seen, fetch } = guarded()
+    const client = new RelayClient({
+      baseUrl: 'http://relay',
+      identity: alice,
+      fetch,
+      relayToken: TOKEN,
+    })
+    // 300바이트는 봉투 형식이 아니라 400 이다 — 여기서 보는 것은 인증을
+    // 통과해 **그 뒤 검사까지 갔다**는 것이다. 401 이면 못 간 것이다.
+    const err = await client.post(new Uint8Array(300)).catch(e => e as RelayError)
+    expect((err as RelayError).status).not.toBe(401)
+    expect(seen).toEqual([`Bearer ${TOKEN}`])
+  })
+
+  test('토큰이 없으면 401 을 던진다 — 조용히 삼키지 않는다', async () => {
+    // 여기서 삼키면 발신자는 보냈다고 믿고 수신자는 영영 못 받는다.
+    // 그 조용한 유실이 이 프로젝트가 가장 피하려는 실패다.
+    const { seen, fetch } = guarded()
+    const client = new RelayClient({ baseUrl: 'http://relay', identity: alice, fetch })
+    const err = await client.post(new Uint8Array(300)).catch(e => e as RelayError)
+    expect(err).toBeInstanceOf(RelayError)
+    expect((err as RelayError).status).toBe(401)
+    expect(seen).toEqual([null])
+  })
+})
+
 describe('폴링', () => {
   test('도착한 것을 흘려 준다', async () => {
     const { fetch, client } = wired()
@@ -172,7 +214,7 @@ describe('폴링', () => {
 describe('수신함 조회 인증 (§10.12)', () => {
   /** 요청 헤더를 붙잡으면서 진짜 핸들러로 넘긴다. 목이 아니라 관찰이다. */
   function capturing() {
-    const handle = createHandler({ store: new MemoryStore() })
+    const handle = createHandler({ store: new MemoryStore(), postAuth: { open: true } })
     const seen: Headers[] = []
     const fetch = ((input: string | URL | Request, init?: RequestInit) => {
       const req = new Request(input as string, init)

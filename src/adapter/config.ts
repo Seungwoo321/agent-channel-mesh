@@ -96,6 +96,13 @@ export interface Config {
   readonly seed: string
   /** 릴레이 base URL. 없으면 로컬 전용 — 아무것도 주고받지 못한다. */
   readonly relay?: string
+  /**
+   * 릴레이 쓰기 토큰 (§10.13). 그 릴레이가 요구할 때만 필요하다.
+   *
+   * 이 파일이 이미 시드와 채널 비밀을 담고 있으므로 토큰이 여기 있는 것이
+   * 새로운 노출은 아니다 — 권한 600 검사가 셋 다 함께 지킨다.
+   */
+  readonly relayToken?: string
   readonly channels: readonly ChannelConfig[]
   /** 로컬 저장소 설정. 없으면 저장소가 자기 기본값으로 선다. */
   readonly store?: StoreConfig
@@ -169,6 +176,9 @@ export function validate(raw: unknown): Config {
   fromHex(o.seed, 32)
 
   if (o.relay !== undefined && typeof o.relay !== 'string') throw new Error('relay 는 URL 문자열이다')
+  if (o.relayToken !== undefined && typeof o.relayToken !== 'string') {
+    throw new Error('relayToken 은 문자열이다 (릴레이 쓰기 토큰)')
+  }
 
   if (!Array.isArray(o.channels)) throw new Error('channels 는 배열이어야 한다')
   const channels = o.channels.map((c, i) => {
@@ -200,7 +210,13 @@ export function validate(raw: unknown): Config {
 
   const store = validateStore(o.store)
 
-  return { seed: o.seed, relay: o.relay as string | undefined, channels, ...(store ? { store } : {}) }
+  return {
+    seed: o.seed,
+    relay: o.relay as string | undefined,
+    relayToken: o.relayToken as string | undefined,
+    channels,
+    ...(store ? { store } : {}),
+  }
 }
 
 /**
@@ -251,7 +267,11 @@ function validateStore(raw: unknown): StoreConfig | undefined {
 export async function buildNode(config: Config): Promise<{ node: MeshNode; identity: Identity }> {
   const identity = await deriveIdentity(fromHex(config.seed, 32))
   const relay = config.relay
-    ? new RelayClient({ baseUrl: config.relay, identity })
+    ? new RelayClient({
+        baseUrl: config.relay,
+        identity,
+        ...(config.relayToken !== undefined ? { relayToken: config.relayToken } : {}),
+      })
     : undefined
   const node = new MeshNode({ identity, relay })
 

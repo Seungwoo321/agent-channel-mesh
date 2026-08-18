@@ -26,10 +26,11 @@ export function hex(bytes: Uint8Array): string {
 }
 
 /** 새 설정 뼈대. 채널은 비워 둔다 — 상대 공개키 없이는 채널을 만들 수 없다. */
-export function skeleton(seed: Uint8Array, relay?: string): Config {
+export function skeleton(seed: Uint8Array, relay?: string, relayToken?: string): Config {
   return {
     seed: hex(seed),
     ...(relay ? { relay } : {}),
+    ...(relayToken ? { relayToken } : {}),
     channels: [],
   }
 }
@@ -43,6 +44,13 @@ export interface InitResult {
 
 export interface InitOptions {
   readonly relay?: string
+  /**
+   * 릴레이 쓰기 토큰 (§10.13). 환경변수 `ACM_RELAY_TOKEN` 에서 온다.
+   *
+   * 플래그로 받지 않는 이유는 `ps` 에 그대로 찍히기 때문이다 — 같은 기계의
+   * 다른 사용자가 프로세스 목록만 보고 토큰을 가져간다.
+   */
+  readonly relayToken?: string
   /** 파일 존재 확인. 테스트에서만 주입한다. */
   readonly exists?: (path: string) => Promise<boolean>
   /** 0600 으로 파일을 쓴다. 테스트에서만 주입한다. */
@@ -69,7 +77,7 @@ export async function init(path: string, options: InitOptions = {}): Promise<Ini
     return { path: file, identity, existed: true }
   }
 
-  await write(file, JSON.stringify(skeleton(seed, options.relay), null, 2) + '\n')
+  await write(file, JSON.stringify(skeleton(seed, options.relay, options.relayToken), null, 2) + '\n')
   return { path: file, identity, existed: false }
 }
 

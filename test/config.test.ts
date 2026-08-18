@@ -118,6 +118,20 @@ describe('검증', () => {
     expect(validate(rest).relay).toBeUndefined()
   })
 
+  test('relayToken 은 없어도 된다 — 루프백 릴레이는 열려 있다 (§10.13)', () => {
+    expect(validate(sample()).relayToken).toBeUndefined()
+  })
+
+  test('relayToken 을 그대로 실어 준다', () => {
+    expect(validate({ ...sample(), relayToken: 'd'.repeat(40) }).relayToken).toBe('d'.repeat(40))
+  })
+
+  test('relayToken 이 문자열이 아니면 던진다', () => {
+    // 숫자로 적힌 토큰은 헤더에 붙는 순간 `[object Object]` 급 쓰레기가 되고,
+    // 릴레이는 401 만 돌려준다 — 원인이 설정 파일에 있다는 게 안 보인다.
+    expect(() => validate({ ...sample(), relayToken: 12345 })).toThrow(/relayToken/)
+  })
+
   test('객체가 아니면 던진다', () => {
     expect(() => validate('설정')).toThrow(/객체/)
   })
@@ -325,6 +339,29 @@ describe('온보딩', () => {
     expect('relay' in skeleton(alice.seed)).toBe(false)
   })
 
+  test('릴레이 토큰을 뼈대에 옮겨 적는다 (§10.13)', () => {
+    const s = skeleton(alice.seed, 'https://r.example', 'e'.repeat(40))
+    expect(s.relayToken).toBe('e'.repeat(40))
+    expect(() => validate(s)).not.toThrow()
+  })
+
+  test('토큰을 안 주면 필드가 아예 없다 — 빈 문자열을 남기지 않는다', () => {
+    expect('relayToken' in skeleton(alice.seed, 'https://r.example')).toBe(false)
+  })
+
+  test('init 이 환경변수에서 온 토큰을 파일에 옮겨 적는다', async () => {
+    // 이것이 `init` 이 토큰을 아는 유일한 경로다. 플래그로 받으면 `ps` 에
+    // 찍혀 같은 기계의 다른 사용자가 프로세스 목록만으로 가져간다.
+    let written = ''
+    await init('/c.json', {
+      relay: 'https://r.example',
+      relayToken: 'f'.repeat(40),
+      exists: async () => false,
+      write: async (_p, t) => void (written = t),
+    })
+    expect(JSON.parse(written).relayToken).toBe('f'.repeat(40))
+  })
+
   test('init 이 0600 으로 쓴다', async () => {
     let mode = -1
     await init('/c.json', {
@@ -411,5 +448,21 @@ describe('명령 인자', () => {
   test('init 에 relay·label 을 준다', () => {
     const a = parseArgs(['init', '--relay', 'https://r', '--label', '수완'])
     expect(a).toMatchObject({ command: 'init', relay: 'https://r', label: '수완' })
+  })
+
+  test('릴레이 토큰은 환경변수로만 온다 (§10.13)', () => {
+    expect(parseArgs(['init'], { ACM_RELAY_TOKEN: 'g'.repeat(40) }).relayToken).toBe('g'.repeat(40))
+  })
+
+  test('토큰 플래그는 없다 — 있으면 `ps` 에 찍힌다', () => {
+    // 모르는 인자로 던지는 것이 맞다. 조용히 무시하면 사용자는 토큰을
+    // 준 줄 알고 릴레이는 401 만 돌려준다.
+    expect(() => parseArgs(['init', '--relay-token', 'x'])).toThrow(/모르는 인자/)
+  })
+
+  test('빈 토큰은 없는 것으로 본다', () => {
+    // 셸이 `ACM_RELAY_TOKEN=` 를 흘려보내면 빈 문자열이 온다. 그대로 받으면
+    // 설정 파일에 빈 토큰이 박히고, 그 뒤 모든 전송이 401 로 죽는다.
+    expect(parseArgs(['init'], { ACM_RELAY_TOKEN: '  ' }).relayToken).toBeUndefined()
   })
 })

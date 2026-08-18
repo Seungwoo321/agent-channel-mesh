@@ -46,7 +46,7 @@ beforeAll(async () => {
 
 const hex = (b: Uint8Array) => [...b].map(x => x.toString(16).padStart(2, '0')).join('')
 
-const handler = () => createHandler({ store: new MemoryStore() })
+const handler = () => createHandler({ store: new MemoryStore(), postAuth: { open: true } })
 
 async function envelopeFor(text: string, seq = 1n) {
   return encode(

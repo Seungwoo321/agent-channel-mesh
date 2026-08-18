@@ -22,6 +22,7 @@
 import { sign, type Identity } from '../identity/keys.js'
 import { fromBase64, type PostBody, type FetchBody, type ErrorBody } from './http.js'
 import { fetchAuthHeaders, fetchSigningBytes, newFetchNonce } from './fetch-auth.js'
+import { HEADER_POST_AUTH } from './post-auth.js'
 
 /** 폴링 간격 기본값. 즉시성과 요청 수의 타협점. */
 export const DEFAULT_POLL_MS = 2000
@@ -39,6 +40,14 @@ export interface ClientOptions {
    * 릴레이가 401 을 준다. 타입으로 막을 수 있는 것을 런타임 실패로 미루지 않는다.
    */
   readonly identity: Identity
+  /**
+   * 릴레이 쓰기 토큰 (§10.13). 그 릴레이가 요구하면 있어야 한다.
+   *
+   * 선택 항목인 이유는 루프백 릴레이가 인증 없이 뜨기 때문이다 — 로컬 개발에
+   * 토큰을 강요하지 않는다. 필요한데 없으면 릴레이가 401 로 답하고, `post()`
+   * 가 그 사실을 그대로 던진다. 조용히 실패하지 않는다.
+   */
+  readonly relayToken?: string
   readonly pollMs?: number
   /** 테스트·서버리스에서 주입한다. 기본은 전역 `fetch`. */
   readonly fetch?: typeof globalThis.fetch
@@ -64,6 +73,7 @@ export class RelayClient {
   private readonly base: string
   private readonly identity: Identity
   private readonly keyIdHex: string
+  private readonly postHeaders: Record<string, string>
   private readonly pollMs: number
   private readonly http: typeof globalThis.fetch
   private stopped = false
@@ -72,6 +82,10 @@ export class RelayClient {
     this.base = options.baseUrl.replace(/\/+$/, '')
     this.identity = options.identity
     this.keyIdHex = hex(options.identity.keyId)
+    this.postHeaders = {
+      'content-type': 'application/octet-stream',
+      ...(options.relayToken ? { [HEADER_POST_AUTH]: `Bearer ${options.relayToken}` } : {}),
+    }
     this.pollMs = options.pollMs ?? DEFAULT_POLL_MS
     this.http = options.fetch ?? globalThis.fetch.bind(globalThis)
   }
@@ -80,7 +94,7 @@ export class RelayClient {
   async post(wire: Uint8Array): Promise<PostBody> {
     const res = await this.http(`${this.base}/post`, {
       method: 'POST',
-      headers: { 'content-type': 'application/octet-stream' },
+      headers: this.postHeaders,
       body: wire,
     })
     const body = (await res.json()) as PostBody | ErrorBody

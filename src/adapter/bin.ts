@@ -29,6 +29,13 @@ export interface Args {
   readonly config: string
   /** `init` 에서 설정에 박아 둘 릴레이 URL. */
   readonly relay?: string
+  /**
+   * `init` 에서 설정에 박아 둘 릴레이 쓰기 토큰 (§10.13).
+   *
+   * 환경변수(`ACM_RELAY_TOKEN`)로만 받는다 — 플래그로 주면 `ps` 에 찍혀
+   * 같은 기계의 다른 사용자가 프로세스 목록만으로 가져간다.
+   */
+  readonly relayToken?: string
   /** `init`·`whoami` 에서 쓸 이름. 신뢰의 근거가 아니다 — 근거는 지문뿐이다(§9). */
   readonly label?: string
 }
@@ -42,6 +49,9 @@ const USAGE = `agent-channel-mesh
   --config <path>   기본값 ${DEFAULT_CONFIG_PATH} (환경변수 ACM_CONFIG 로도 지정)
   --relay <url>     init 이 설정에 박아 둘 릴레이 URL
   --label <name>    내 이름 (기본값: 내이름)
+
+  ACM_RELAY_TOKEN   릴레이 쓰기 토큰 (환경변수). init 이 설정에 옮겨 적는다.
+                    플래그가 아닌 이유는 \`ps\` 에 그대로 찍히기 때문이다.
 
   --delivery push    Claude Code — 세션에 능동 주입한다
   --delivery inbox   그 외 에이전트(Codex 등) — 수신함에 쌓고 inbox 툴로 꺼낸다
@@ -58,6 +68,7 @@ export function parseArgs(argv: readonly string[], env: Record<string, string | 
   let command: Command = 'serve'
   let relay: string | undefined
   let label: string | undefined
+  const relayToken = env.ACM_RELAY_TOKEN?.trim() || undefined
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!
@@ -71,14 +82,14 @@ export function parseArgs(argv: readonly string[], env: Record<string, string | 
 
   // 전달 방식은 서버를 띄울 때만 필요하다. init 에까지 요구하면
   // 설정을 만들기 전에 전달 방식을 정하라는 말이 된다.
-  if (command !== 'serve') return { command, config, relay, label }
+  if (command !== 'serve') return { command, config, relay, relayToken, label }
 
   if (delivery !== 'push' && delivery !== 'inbox' && delivery !== 'both') {
     throw new Error(
       `--delivery 는 push·inbox·both 중 하나여야 한다 (받은 값: ${delivery ?? '없음'})\n\n${USAGE}`,
     )
   }
-  return { command, delivery, config, relay, label }
+  return { command, delivery, config, relay, relayToken, label }
 }
 
 /**
@@ -93,7 +104,10 @@ export async function main(argv: readonly string[]): Promise<{ stop: () => Promi
   // 사람이 읽는 출력은 stdout 으로 낸다. serve 만 stdout 이 MCP 프레이밍에
   // 묶여 있고, 이 둘은 서버가 아니다.
   if (args.command === 'init') {
-    const { path, identity, existed } = await init(args.config, { relay: args.relay })
+    const { path, identity, existed } = await init(args.config, {
+      relay: args.relay,
+      relayToken: args.relayToken,
+    })
     if (existed) {
       // 시드를 덮어쓰면 신원이 사라지고 상대가 대조해 둔 지문이 무효가 된다.
       process.stdout.write(

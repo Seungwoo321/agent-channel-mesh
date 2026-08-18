@@ -529,7 +529,7 @@ export class MessageStore {
     let raw: string
     try {
       // 파일이 0600 이어도 디렉토리가 넓으면 평문은 이미 남에게 열려 있다.
-      // 검사를 쓰기 경로에만 걸면 §10.13 이 0700/0600 에 맡긴 방어가 읽기로
+      // 검사를 쓰기 경로에만 걸면 §10.14 가 0700/0600 에 맡긴 방어가 읽기로
       // 그대로 뚫린다 — 두 경로가 같은 기준을 봐야 방어가 성립한다.
       await this.assertDir()
       await assertMode(file, MAX_FILE_MODE, '저장 파일', '대화 평문이 들어 있으므로 chmod 600')
