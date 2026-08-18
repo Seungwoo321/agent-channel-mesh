@@ -17,7 +17,7 @@
  * 어댑터가 이미 전달 표시를 찍어 두므로 여기서는 아무것도 안 나온다.
  * 주입이 실패했거나 세션이 놓쳤을 때만 뜬다.
  */
-import { loadConfig, storeOptionsOf, DEFAULT_CONFIG_PATH } from '../adapter/config.js'
+import { loadConfig, storeOptionsOf, expandHome, DEFAULT_CONFIG_PATH } from '../adapter/config.js'
 import { MessageStore, type StoredMessage } from '../store/store.js'
 import { renderBundle } from '../adapter/bundle.js'
 
@@ -250,8 +250,40 @@ export async function hookMain(argv: readonly string[]): Promise<void> {
   })
 }
 
+/**
+ * 설정이 아직 없을 때 세션에 하는 말.
+ *
+ * **세션 시작에만 한다.** `PostToolUse` 는 툴 호출마다 도는 훅이라(§6.6)
+ * 거기서도 말하면 설정을 만들 때까지 매 호출에 같은 문장이 실린다 —
+ * 안내가 아니라 소음이고, 컨텍스트를 밀어낸다.
+ */
+export const SETUP_HINT =
+  'agent-channel-mesh is installed but has no identity yet. ' +
+  'Its setup tool is the only tool it exposes right now — ' +
+  'ask the user for a relay URL and a display name, then call it. ' +
+  'Mention this only if the user brings up messaging; do not interrupt their task for it.'
+
 async function run(argv: readonly string[]): Promise<void> {
-  const config = await loadConfig(parseConfigPath(argv))
+  const path = parseConfigPath(argv)
+
+  // 설정이 없는 것은 첫 실행이다(§11.1). 조용히 지나가면 훅이 깔린 줄도
+  // 모른 채 며칠이 가므로, 시작할 때 한 번만 알린다. 파일이 있는데 못 읽는
+  // 경우는 아래에서 그대로 던진다 — 권한 검사(§11)를 삼키면 안 된다.
+  if (!(await Bun.file(expandHome(path)).exists())) {
+    const event = parseEvent(argv)
+    const out: HookOutput =
+      event === 'SessionStart'
+        ? {
+            continue: true,
+            suppressOutput: true,
+            hookSpecificOutput: { hookEventName: event, additionalContext: SETUP_HINT },
+          }
+        : { continue: true, suppressOutput: true }
+    process.stdout.write(JSON.stringify(out))
+    return
+  }
+
+  const config = await loadConfig(path)
   const store = new MessageStore(storeOptionsOf(config.store))
   const out = await runHook(parseEvent(argv), store)
   process.stdout.write(JSON.stringify(out))

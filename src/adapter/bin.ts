@@ -13,8 +13,9 @@
  *
  * stdout 은 MCP 프레이밍이 쓴다. 사람에게 하는 말은 전부 stderr 로 나간다.
  */
-import { loadConfig, buildNode, storeOptionsOf, DEFAULT_CONFIG_PATH } from './config.js'
+import { loadConfig, buildNode, storeOptionsOf, expandHome, DEFAULT_CONFIG_PATH } from './config.js'
 import { serve, type Delivery } from './server.js'
+import { serveSetup } from './setup.js'
 import { MessageStore } from '../store/store.js'
 import { init, whoami, newChannelSecret } from './onboard.js'
 import { format } from '../identity/fingerprint.js'
@@ -146,6 +147,22 @@ export async function main(argv: readonly string[]): Promise<{ stop: () => Promi
     const { identity } = await buildNode(await loadConfig(args.config))
     process.stdout.write(whoami(identity, args.label) + '\n')
     return undefined
+  }
+
+  // 설정이 **아직 없는** 것은 오류가 아니라 첫 실행이다. 여기서 던지면
+  // 플러그인을 막 깐 사람에게는 툴이 통째로 사라진 것으로만 보인다 — 설정을
+  // 만들라고 말해 줄 자리가 세션 안에 하나도 없다(§11.1). 파일이 있는데
+  // 못 읽는 경우는 그대로 던진다: 권한 600 검사(§11)를 여기서 무르게 하면
+  // 검사 자체가 없는 것과 같다.
+  if (!(await Bun.file(expandHome(args.config)).exists())) {
+    process.stderr.write(
+      `[agent-channel-mesh] 설정이 없다: ${expandHome(args.config)}\n` +
+        `[agent-channel-mesh] 설정 모드로 뜬다 — 세션에서 setup 툴을 부르면 만든다.\n`,
+    )
+    return await serveSetup({
+      configPath: args.config,
+      ...(args.relayToken !== undefined ? { relayToken: args.relayToken } : {}),
+    })
   }
 
   const config = await loadConfig(args.config)

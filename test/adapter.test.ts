@@ -153,6 +153,26 @@ describe('세션 → 메시 (두 어댑터 공통)', () => {
     const empty = new MeshNode({ identity: alice })
     expect((await callTool({ node: empty, store }, 'channels', {})).text).toContain('없다')
   })
+
+  test('whoami 가 공개키와 지문을 낸다', async () => {
+    // 어댑터는 이 값을 stderr 로만 내는데 사람은 그 화면을 보지 못한다.
+    // 세션 안에 꺼낼 자리가 없으면 공개키 교환이 시작되지 않는다.
+    const res = await callTool({ node: new MeshNode({ identity: alice }), store }, 'whoami', {
+      label: 'alice',
+    })
+    expect(res.isError).toBeFalsy()
+    expect(res.text).toContain('members')
+    expect(res.text).toContain('alice')
+    expect(res.text).toMatch(/fp: (?:[0-9a-f]{4} ){7}[0-9a-f]{4}/)
+  })
+
+  test('whoami 가 시드를 내지 않는다', async () => {
+    // 툴 응답은 모델 컨텍스트로 들어가고, 그 컨텍스트는 로그·요약을 거친다.
+    const node = new MeshNode({ identity: alice })
+    const res = await callTool({ node, store }, 'whoami', {})
+    const seed = Array.from(alice.seed, b => b.toString(16).padStart(2, '0')).join('')
+    expect(res.text).not.toContain(seed)
+  })
 })
 
 describe('inbox 툴 — 저장소를 꺼내 간다', () => {

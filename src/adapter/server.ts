@@ -23,7 +23,14 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { MeshNode, Dropped } from '../node/node.js'
 import { MessageStore, type StoredMessage } from '../store/store.js'
-import { callTool, SEND_TOOL, CHANNELS_TOOL, INBOX_TOOL, type ToolSpec } from './tools.js'
+import {
+  callTool,
+  SEND_TOOL,
+  CHANNELS_TOOL,
+  INBOX_TOOL,
+  WHOAMI_TOOL,
+  type ToolSpec,
+} from './tools.js'
 import { ClaudeAdapter, CAPABILITIES, INSTRUCTIONS } from './claude.js'
 import { hex } from './bundle.js'
 
@@ -103,7 +110,7 @@ export async function serve(options: ServeOptions): Promise<{ stop: () => Promis
   const push = delivery !== 'inbox'
   const inboxTool = delivery !== 'push'
 
-  const tools: ToolSpec[] = [SEND_TOOL, CHANNELS_TOOL]
+  const tools: ToolSpec[] = [SEND_TOOL, CHANNELS_TOOL, WHOAMI_TOOL]
   if (inboxTool) tools.push(INBOX_TOOL)
 
   const mcp = new Server(

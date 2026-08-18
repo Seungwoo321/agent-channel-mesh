@@ -662,7 +662,8 @@ describe('bin.ts 를 서브프로세스로 띄운다', () => {
 
     const listed = await adapter.request('tools/list')
     const names = (listed.tools as { name: string }[]).map(t => t.name).sort()
-    expect(names).toEqual(['channels', 'inbox', 'send'])
+    // whoami 는 전달 방식과 무관하다 — 공개키 교환은 셋 다 필요하다(§11.1).
+    expect(names).toEqual(['channels', 'inbox', 'send', 'whoami'])
   }, 30_000)
 
   test('SCN-2 · push 는 inbox 를 싣지 않고, inbox 는 capability 를 선언하지 않는다', async () => {
@@ -670,14 +671,14 @@ describe('bin.ts 를 서브프로세스로 띄운다', () => {
     const pushNames = ((await pushed.adapter.request('tools/list')).tools as { name: string }[])
       .map(t => t.name)
       .sort()
-    expect(pushNames).toEqual(['channels', 'send'])
+    expect(pushNames).toEqual(['channels', 'send', 'whoami'])
     expect(pushed.adapter.initializeResult.capabilities).toHaveProperty('experimental')
 
     const polled = await boot('inbox')
     const inboxNames = ((await polled.adapter.request('tools/list')).tools as { name: string }[])
       .map(t => t.name)
       .sort()
-    expect(inboxNames).toEqual(['channels', 'inbox', 'send'])
+    expect(inboxNames).toEqual(['channels', 'inbox', 'send', 'whoami'])
     // 못 하는 것을 선언하면 호스트가 할 수 있다고 믿는다.
     expect(polled.adapter.initializeResult.capabilities).not.toHaveProperty('experimental')
   }, 30_000)

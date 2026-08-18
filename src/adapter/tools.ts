@@ -15,6 +15,7 @@ import type { MeshNode } from '../node/node.js'
 import type { MessageStore, StoredMessage } from '../store/store.js'
 import { toHex } from '../identity/fingerprint.js'
 import { renderBundle } from './bundle.js'
+import { whoami } from './onboard.js'
 
 /** MCP `tools/list` 에 그대로 실을 수 있는 형태. */
 export interface ToolSpec {
@@ -76,6 +77,27 @@ export const INBOX_TOOL: ToolSpec = {
   },
 }
 
+/**
+ * 내 공개키와 지문 (§9).
+ *
+ * 어댑터는 대화창이 없는 서브프로세스라 이 값을 stderr 로만 낸다 — 사람은
+ * 그 화면을 보지 못한다. 플러그인으로 깐 사람이 상대에게 보낼 `members`
+ * 블록을 꺼낼 자리가 세션 안에 없으면, 3단계(공개키 교환)가 시작조차 되지
+ * 않는다. 공개값만 낸다 — 시드는 여기로 나가지 않는다.
+ */
+export const WHOAMI_TOOL: ToolSpec = {
+  name: 'whoami',
+  description:
+    '상대 설정의 members 에 넣을 내 공개키와, 대역 외로 대조할 내 지문을 보여준다. ' +
+    '개인키는 나오지 않는다.',
+  inputSchema: {
+    type: 'object',
+    properties: {
+      label: { type: 'string', description: '상대 설정에 적힐 내 이름. 표시용이다.' },
+    },
+  },
+}
+
 /** 툴 실행 결과. MCP `content` 로 감싸기 직전의 평문. */
 export interface ToolResult {
   readonly text: string
@@ -114,6 +136,8 @@ export async function callTool(
         return await handleChannels(ctx)
       case 'inbox':
         return await handleInbox(ctx, args)
+      case 'whoami':
+        return handleWhoami(ctx, args)
       default:
         return { text: `모르는 툴이다: ${name}`, isError: true }
     }
@@ -179,6 +203,17 @@ async function handleChannels(ctx: HandlerContext): Promise<ToolResult> {
     lines.push(`${channel.name || '(이름 없는 채널)'}\n  id ${id} · 안 읽음 ${unread}\n${members}`)
   }
   return { text: lines.join('\n\n') }
+}
+
+/**
+ * 내 공개키와 지문을 낸다.
+ *
+ * `onboard.whoami` 를 그대로 쓴다 — CLI 와 툴이 각자 문구를 만들면 지문
+ * 표기(§9)가 두 벌이 되고, 사람은 두 화면의 값이 같은 값인지 알 수 없다.
+ */
+function handleWhoami(ctx: HandlerContext, args: Record<string, unknown>): ToolResult {
+  const label = str(args.label)
+  return { text: whoami(ctx.node.identity, label === '' ? undefined : label) }
 }
 
 /**
