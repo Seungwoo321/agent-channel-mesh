@@ -15,7 +15,7 @@ import { deriveIdentity, type Identity } from '../identity/keys.js'
 import { Channel } from '../channel/channel.js'
 import { MeshNode } from '../node/node.js'
 import { RelayClient } from '../relay/client.js'
-import type { Axis } from '../store/store.js'
+import type { Axis, StoreOptions } from '../store/store.js'
 
 /** 기본 설정 위치. `ACM_CONFIG` 로 덮어쓴다. */
 export const DEFAULT_CONFIG_PATH = '~/.agent-channel-mesh/config.json'
@@ -64,6 +64,31 @@ export interface StoreConfig {
   readonly retentionMs?: number
   /** 채널당 보관 개수 상한. 기한과 별개로 파일 크기를 묶어 둔다. */
   readonly maxPerChannel?: number
+}
+
+/**
+ * 설정 파일의 저장소 설정을 `MessageStore` 옵션으로 옮긴다.
+ *
+ * 이름이 같아도 **명시로 옮긴다.** 스프레드로 넘기면 두 타입이 우연히 겹쳐
+ * 있는 동안만 맞고, 한쪽이 필드를 늘리거나 이름을 바꾸는 순간 조용히
+ * 어긋난다 — 타입 검사는 통과하고 값만 사라지는 종류의 고장이다.
+ * `undefined` 를 넣지 않고 키 자체를 빼는 이유도 같다: `{dir: undefined}` 는
+ * `??` 기본값을 타지만, `exactOptionalPropertyTypes` 아래서는 타입이 갈린다.
+ *
+ * `~` 는 펴지 않는다 — `MessageStore` 생성자가 이미 편다. 여기서 한 번 더
+ * 펴면 확장 규칙이 두 곳에 생기고, 갈리면 한쪽이 틀린다.
+ *
+ * **여기가 유일한 자리다.** 어댑터(`bin.ts`)와 훅(`install/notify.ts`)이 같은
+ * 저장소를 봐야 하는데 각자 옮기면, 사용자가 `store.dir` 을 바꾼 순간 둘이
+ * 다른 디렉토리를 보고 훅이 영원히 조용해진다.
+ */
+export function storeOptionsOf(store: StoreConfig | undefined): StoreOptions {
+  if (store === undefined) return {}
+  return {
+    ...(store.dir !== undefined ? { dir: store.dir } : {}),
+    ...(store.retentionMs !== undefined ? { retentionMs: store.retentionMs } : {}),
+    ...(store.maxPerChannel !== undefined ? { maxPerChannel: store.maxPerChannel } : {}),
+  }
 }
 
 export interface Config {

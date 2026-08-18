@@ -13,9 +13,9 @@
  *
  * stdout 은 MCP 프레이밍이 쓴다. 사람에게 하는 말은 전부 stderr 로 나간다.
  */
-import { loadConfig, buildNode, DEFAULT_CONFIG_PATH, type StoreConfig } from './config.js'
+import { loadConfig, buildNode, storeOptionsOf, DEFAULT_CONFIG_PATH } from './config.js'
 import { serve, type Delivery } from './server.js'
-import { MessageStore, type StoreOptions } from '../store/store.js'
+import { MessageStore } from '../store/store.js'
 import { init, whoami, newChannelSecret } from './onboard.js'
 import { format } from '../identity/fingerprint.js'
 
@@ -133,30 +133,9 @@ export async function main(argv: readonly string[]): Promise<{ stop: () => Promi
     // 안 넘겨도 서버는 뜨지만, 그러면 설정 파일의 `store.*` 는 검증만 되고
     // 아무 효과가 없다 — 사용자는 보관 기한을 줄였다고 믿는데 30일 기본값이
     // 그대로 돈다. 조용히 무시되는 설정이 없는 설정보다 나쁘다 (§6.3 · §11).
-    store: new MessageStore(storeOptions(config.store)),
+    store: new MessageStore(storeOptionsOf(config.store)),
     onDropped: d => process.stderr.write(`[agent-channel-mesh] 버림: ${d.reason} — ${d.detail}\n`),
   })
-}
-
-/**
- * 설정 파일의 저장소 설정을 `MessageStore` 옵션으로 옮긴다.
- *
- * 이름이 같아도 **명시로 옮긴다.** 스프레드로 넘기면 두 타입이 우연히 겹쳐
- * 있는 동안만 맞고, 한쪽이 필드를 늘리거나 이름을 바꾸는 순간 조용히
- * 어긋난다 — 타입 검사는 통과하고 값만 사라지는 종류의 고장이다.
- * `undefined` 를 넣지 않고 키 자체를 빼는 이유도 같다: `{dir: undefined}` 는
- * `??` 기본값을 타지만, `exactOptionalPropertyTypes` 아래서는 타입이 갈린다.
- *
- * `~` 는 펴지 않는다 — `MessageStore` 생성자가 이미 편다(src/store/store.ts:140).
- * 여기서 한 번 더 펴면 확장 규칙이 두 곳에 생기고, 갈리면 한쪽이 틀린다.
- */
-function storeOptions(store: StoreConfig | undefined): StoreOptions {
-  if (store === undefined) return {}
-  return {
-    ...(store.dir !== undefined ? { dir: store.dir } : {}),
-    ...(store.retentionMs !== undefined ? { retentionMs: store.retentionMs } : {}),
-    ...(store.maxPerChannel !== undefined ? { maxPerChannel: store.maxPerChannel } : {}),
-  }
 }
 
 // 임포트될 때는 아무 일도 하지 않는다 — 테스트가 parseArgs 만 부를 수 있어야 한다.
