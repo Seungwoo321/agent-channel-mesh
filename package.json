@@ -1,9 +1,8 @@
 {
   "name": "agent-channel-mesh",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "종단 간 암호화된 코딩 에이전트 메시징 메시",
   "type": "module",
-  "private": true,
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -16,7 +15,8 @@
     "adapter": "bun run src/adapter/bin.ts",
     "relay": "bun run src/server.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "plugin": "bun run src/install/plugin.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
@@ -33,5 +33,31 @@
     "@noble/curves": "^2.3.0",
     "@noble/hashes": "^2.3.0",
     "zod": "^4.4.3"
+  },
+  "keywords": [
+    "mcp",
+    "claude-code",
+    "codex",
+    "e2ee",
+    "agent",
+    "messaging",
+    "hpke"
+  ],
+  "homepage": "https://github.com/Seungwoo321/agent-channel-mesh#readme",
+  "bugs": {
+    "url": "https://github.com/Seungwoo321/agent-channel-mesh/issues"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "files": [
+    "src",
+    "index.ts",
+    "docs/architecture.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }

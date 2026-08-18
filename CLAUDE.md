@@ -63,6 +63,23 @@
 - 프로토콜 동작은 `spike/channel.ts` 로 4/4 검증돼 있다(채널 등록·인바운드 주입·아웃바운드 `reply`·발신자 게이팅).
 - 로컬 실행: `claude --dangerously-load-development-channels server:mesh-spike`
 
+## Codex 훅 — 조용히 사라지는 자리
+
+`docs/architecture.md` §6.6 이 실측으로 확정한 사항이다. 셋 다 "파일에는 있는데 한 번도 돌지 않는" 고장이라 눈으로는 안 보인다.
+
+- **`async` 를 달지 않는다.** Codex 는 async 훅을 지원하지 않고, 만나면 등록 목록에서 통째로 뺀 뒤 경고 한 줄만 남긴다. 턴 중간 알림은 `PostToolUse` 가 맡는다 — 툴 호출마다 도는 동기 훅이다.
+- **조정값은 camelCase 다** (`timeout` · `additionalContextLimit`). `timeout_sec` · `additional_context_limit` 은 바이너리에 이름이 있어도 설정 파일 파서가 읽지 않는다 — 조용히 버리고 기본값(600초 · 무제한)으로 떨어진다.
+- **`codex doctor` 로 검증하지 않는다.** 일부러 깨뜨린 JSON 도 `config.load: ok` 다. 확인하는 유일한 길은 `codex app-server` 에 JSON-RPC `hooks/list` 를 던져 `warnings`·`errors` 를 보는 것이다.
+- 실측은 **임시 `CODEX_HOME`** 에서 한다. 사용자의 `~/.codex` 에 설치기를 돌리지 않는다.
+
+## 플러그인 배포 — 레포 하나가 두 마켓플레이스다
+
+`docs/architecture.md` §11.1 참조.
+
+- **매니페스트·훅 파일을 손으로 고치지 않는다.** `src/install/plugin.ts` 가 생성기이고, 커밋된 산출물이 생성 결과와 같은지는 `test/plugin.test.ts` 가 지킨다. 손으로 고치면 다음 생성에서 조용히 되돌아간다.
+- 훅 이벤트 정의는 `src/install/hooks.ts` 의 `HOOK_EVENTS` **한 곳**에만 있다. 플러그인 쪽에 따로 적으면 설치 경로마다 알림이 갈린다.
+- **`bunx <패키지>@<버전>` 의 버전을 뗀 채로 두지 않는다.** 플러그인은 클론만 되고 의존성 설치가 없어 소스 경로로는 못 돌고, `@latest` 면 레지스트리가 바뀌는 것만으로 팀원들의 훅 동작이 갈린다.
+
 ## 테스트
 
 ```ts

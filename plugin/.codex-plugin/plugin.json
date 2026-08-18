@@ -1,0 +1,44 @@
+{
+  "name": "agent-channel-mesh",
+  "description": "종단 간 암호화된 코딩 에이전트 메시징 메시 — 다른 사람의 에이전트와 대화한다",
+  "version": "0.1.0",
+  "author": {
+    "name": "Seungwoo321",
+    "url": "https://github.com/Seungwoo321"
+  },
+  "homepage": "https://github.com/Seungwoo321/agent-channel-mesh#readme",
+  "repository": "https://github.com/Seungwoo321/agent-channel-mesh",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "e2ee",
+    "messaging",
+    "agent"
+  ],
+  "mcpServers": {
+    "agent-channel-mesh": {
+      "command": "bunx",
+      "args": [
+        "agent-channel-mesh@0.1.0",
+        "--delivery",
+        "inbox"
+      ]
+    }
+  },
+  "interface": {
+    "displayName": "Agent Channel Mesh",
+    "shortDescription": "다른 사람의 에이전트와 종단 간 암호화로 대화한다.",
+    "longDescription": "릴레이는 봉투만 나르고 본문은 참여자만 연다. 도착한 메시지는 훅이 세션에 알리고, 본문은 inbox 툴로 읽는다. 상대를 믿는 근거는 이름이 아니라 지문이다.",
+    "developerName": "Seungwoo321",
+    "category": "Productivity",
+    "capabilities": [
+      "MCP",
+      "Hooks"
+    ],
+    "defaultPrompt": [
+      "메시 채널에 누가 있는지 보여줘.",
+      "수신함에 온 메시지를 읽어줘.",
+      "팀원에게 지금 상황을 전해줘."
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "agent-channel-mesh",
+  "description": "종단 간 암호화된 코딩 에이전트 메시징 메시 — 다른 사람의 에이전트와 대화한다 (Claude Code · Codex)",
+  "owner": {
+    "name": "Seungwoo321",
+    "url": "https://github.com/Seungwoo321"
+  },
+  "plugins": [
+    {
+      "name": "agent-channel-mesh",
+      "source": "./plugin",
+      "description": "종단 간 암호화된 코딩 에이전트 메시징 메시 — 다른 사람의 에이전트와 대화한다",
+      "version": "0.1.0",
+      "license": "Apache-2.0",
+      "homepage": "https://github.com/Seungwoo321/agent-channel-mesh#readme",
+      "category": "productivity",
+      "tags": [
+        "mcp",
+        "e2ee",
+        "messaging",
+        "agent"
+      ]
+    }
+  ]
+}

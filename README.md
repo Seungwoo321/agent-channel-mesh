@@ -2,7 +2,7 @@
 
 에이전트와 사람이 같은 메시에서 대화한다. 릴레이는 암호문만 지나보내고, 평문은 참여자 로컬에만 존재한다.
 
-> 초기 개발 중. 아직 사용할 수 없다.
+> 초기 개발 중. 플러그인이 실행하는 npm 패키지가 아직 올라가 있지 않아, [설치](#설치) 절차는 지금 그대로 따라가면 첫 실행에서 죽는다.
 
 ## 무엇인가
 
@@ -47,15 +47,53 @@ Codex 에도 주입 메서드가 있지만(`app-server` 의 `turn/steer`) 세션
 
 자세한 설계는 [docs/architecture.md](docs/architecture.md) 참조.
 
-## 붙이기
+## 설치
 
-어댑터는 에이전트가 띄우는 stdio MCP 서버다. 설정 파일 하나를 읽는다 — 대화창이 없어서 시드도 채널 비밀도 물어볼 수 없다.
+**레포를 클론하지 않는다.** 두 에이전트 모두 플러그인으로 깐다 — 이 레포가 곧 마켓플레이스이고, 플러그인은 MCP 서버와 훅을 함께 등록한다. 필요한 것은 [Bun](https://bun.sh) 하나다.
 
-### 0. 릴레이를 띄운다
+### Claude Code
 
-참여자가 공통으로 바라볼 주소가 하나 필요하다. 로컬에서 시험할 때는 이걸로 충분하다.
+세션 안에서 두 줄이다.
+
+```
+/plugin marketplace add Seungwoo321/agent-channel-mesh
+/plugin install agent-channel-mesh@agent-channel-mesh
+```
+
+터미널에서도 같다.
 
 ```bash
+claude plugin marketplace add Seungwoo321/agent-channel-mesh
+claude plugin install agent-channel-mesh@agent-channel-mesh
+```
+
+### Codex
+
+```bash
+codex plugin marketplace add Seungwoo321/agent-channel-mesh
+codex plugin add agent-channel-mesh@agent-channel-mesh
+```
+
+깔린 플러그인은 `untrusted` 로 들어온다. 세션에서 `/hooks` 를 열어 승인해야 훅이 돈다 — 승인하지 않으면 MCP 툴은 붙었는데 **알림만 오지 않는** 상태가 된다. 플러그인을 새 버전으로 올리면 해시가 바뀌어 다시 승인해야 한다.
+
+### 무엇이 깔리나
+
+두 에이전트가 **같은 마켓플레이스 파일**(`.claude-plugin/marketplace.json`)과 **같은 훅 파일**(`plugin/hooks/hooks.json`)을 읽는다. 갈리는 것은 플러그인 매니페스트 하나뿐이고, 거기서 정해지는 것은 전달 방식이다 — Claude 는 `both`(주입 + 수신함), Codex 는 `inbox`(수신함). 그래서 어느 쪽으로 깔든 암호·정책·릴레이 통신은 같은 코어를 지난다.
+
+플러그인은 클론만 되고 의존성 설치는 일어나지 않으므로, 훅과 MCP 서버는 레포 안의 소스가 아니라 npm 에서 받은 **버전이 박힌** 패키지(`bunx agent-channel-mesh@<버전>`)를 돌린다. `@latest` 로 두면 어느 날 레지스트리가 바뀌는 것만으로 팀원들의 훅 동작이 갈린다.
+
+## 붙이기
+
+설치는 통로를 놓을 뿐이고, 대화는 신원과 채널이 있어야 시작된다. 어댑터는 대화창이 없는 stdio MCP 서버라 시드도 채널 비밀도 물어볼 수 없다 — 설정 파일 하나가 유일한 입력이다.
+
+### 1. 릴레이를 띄운다
+
+참여자가 공통으로 바라볼 주소가 하나 필요하다. **한 사람만** 하면 되고, 나머지는 그 주소만 받는다. 상시 운용은 [배포](#배포) 참조이고, 아래는 로컬에서 시험할 때다.
+
+```bash
+git clone https://github.com/Seungwoo321/agent-channel-mesh.git
+cd agent-channel-mesh
+bun install
 bun run src/server.ts                 # http://127.0.0.1:8787
 ```
 
@@ -68,45 +106,45 @@ bun run src/server.ts --host 0.0.0.0
 
 토큰 없이 루프백 밖으로 뜨려고 하면 기동에서 죽는다. 아무나 올릴 수 있는 릴레이는 **남의 수신함을 채워 아직 못 받은 메시지를 큐 밖으로 밀어낼 수 있고**, 당한 쪽에는 그 유실이 보이지 않기 때문이다. 우회 플래그는 없다 — 열려면 토큰을 만든다.
 
-저장소가 메모리이므로 이 프로세스가 죽으면 대기 중인 봉투가 사라진다. 상시 운용은 [배포](#배포) 참조.
+저장소가 메모리이므로 이 프로세스가 죽으면 대기 중인 봉투가 사라진다.
 
-### 1. 신원을 만든다
+### 2. 신원을 만든다
 
-대화에 참여하는 **사람마다 각자의 기계에서** 한 번 실행한다.
+대화에 참여하는 **사람마다 각자의 기계에서** 한 번 실행한다. 플러그인을 깔았어도 이 한 줄은 사람이 직접 친다 — 시드를 만드는 순간이라 자동으로 해 줄 수 없다.
 
 ```bash
-bun run src/adapter/bin.ts init --relay http://127.0.0.1:8787 --label alice
+bunx agent-channel-mesh init --relay http://127.0.0.1:8787 --label alice
 ```
 
 릴레이가 쓰기 토큰을 요구하면 환경변수로 함께 준다 — `init` 이 설정 파일에 옮겨 적는다. 플래그가 아닌 이유는 `ps` 에 그대로 찍히기 때문이다.
 
 ```bash
 ACM_RELAY_TOKEN=<릴레이 운영자에게 받은 값> \
-  bun run src/adapter/bin.ts init --relay https://relay.example --label alice
+  bunx agent-channel-mesh init --relay https://relay.example --label alice
 ```
 
 시드를 만들고 `~/.agent-channel-mesh/config.json` 을 `0600` 으로 쓴다. 그리고 두 가지를 출력한다 — 상대에게 보낼 공개키 블록과, 내 지문이다.
 
-**이미 파일이 있으면 아무것도 하지 않는다.** 시드를 덮어쓰면 신원이 사라지고, 상대가 대조해 둔 지문이 전부 무효가 된다.
+**이미 파일이 있으면 아무것도 하지 않는다.** 시드를 덮어쓰면 신원이 사라지고, 상대가 대조해 둔 지문이 전부 무효가 된다. 백업본으로 되돌리는 길은 두지 않았다 — 잃었으면 다시 `init` 하고 지문을 다시 대조한다.
 
-### 2. 공개키를 교환하고 지문을 대조한다
+### 3. 공개키를 교환하고 지문을 대조한다
 
 `init` 이 출력한 `members` 블록을 상대에게 보내고, 상대 것을 받아 내 `config.json` 의 `channels[].members` 에 넣는다. 나중에 다시 보려면 `whoami` 를 쓴다.
 
 ```bash
-bun run src/adapter/bin.ts whoami --label alice
+bunx agent-channel-mesh whoami --label alice
 ```
 
 **지문은 반드시 다른 경로로 대조한다** — 음성 통화나 대면이다. 공개키가 온 그 경로로 온 지문은 아무것도 검증하지 못한다. 값이 어긋나면 중간자가 있다는 뜻이고, 그때 대화를 시작하면 안 된다.
 
-### 3. 채널 비밀을 나눈다
+### 4. 채널 비밀을 나눈다
 
 채널을 여는 사람이 `init` 이 출력한 채널 비밀을 참여자에게 전달한다. 같은 비밀을 넣은 노드끼리 같은 채널에 붙는다.
 
 **이 교환이 수동인 것은 미완성이 아니라 설계다.** 두 단계가 각각 다른 것을 막는다.
 
 - **채널 비밀**(이 단계) — 접근 통제다. 초대 링크나 채널명 검색으로 아무나 들어올 수 있으면 트래픽 제약도, 악용에 대한 대처도 성립하지 않는다. 누구에게 줬는지 아는 사람만이 누구를 끊을지 정할 수 있다.
-- **공개키·지문**(2단계) — 중간자 차단이다. 자동 교환하면 그 경로를 쥔 쪽이 키를 바꿔치기할 수 있다.
+- **공개키·지문**(3단계) — 중간자 차단이다. 자동 교환하면 그 경로를 쥔 쪽이 키를 바꿔치기할 수 있다.
 
 **채널 비밀은 이름이 아니라 열쇠다.** 이것을 가진 쪽은 그 채널에 유효한 메시지를 **쓸 수 있다** — 읽기는 상대가 내 공개키를 등록해야 가능하지만 쓰기는 비밀만으로 된다. 암호화된 메신저나 대면으로 전달하고, 공개 채널·이슈 트래커·커밋에 남기지 않는다.
 
@@ -119,7 +157,7 @@ bun run src/adapter/bin.ts whoami --label alice
 | 릴레이 주소 | 아무 경로나 | 비밀이 아니다 |
 | 릴레이 쓰기 토큰(§10.13) | 암호화된 경로 | 이걸 쥔 사람은 그 릴레이에 봉투를 올릴 수 있다 |
 | 채널 비밀 | 암호화된 경로 | 이걸 쥔 사람이 곧 멤버다 |
-| 공개키(`members`) | 아무 경로나 — **단 지문은 다른 경로로 대조**(2단계) | 공개값이지만 바꿔치기가 가능하다 |
+| 공개키(`members`) | 아무 경로나 — **단 지문은 다른 경로로 대조**(3단계) | 공개값이지만 바꿔치기가 가능하다 |
 
 릴레이 토큰과 채널 비밀은 **다른 것을 연다.** 토큰은 "이 릴레이를 쓸 자격"까지만이라 어느 채널에 올리는지는 가리지 않는다 — 팀을 나누는 것은 채널 비밀이다. 팀원을 끊으려면 채널 비밀을 새로 만들어 남은 사람에게만 다시 준다.
 
@@ -139,31 +177,7 @@ bun run src/adapter/bin.ts whoami --label alice
 
 **개인키와 채널 비밀이 들어 있다.** 권한이 `600` 보다 넓으면 어댑터가 읽지 않고 죽는다.
 
-### 4. 에이전트에 등록한다
-
-```bash
-# Claude Code — 주입과 수신함을 겸한다
-claude mcp add agent-channel-mesh -- bun run <repo>/src/adapter/bin.ts --delivery both
-
-# Codex — 수신함
-codex mcp add agent-channel-mesh -- bun run <repo>/src/adapter/bin.ts --delivery inbox
-```
-
-`--delivery` 는 필수다. 환경을 보고 추측하면 틀렸을 때 조용히 틀린다 — Claude 에서 수신함 모드로 뜨면 메시지가 도착해도 세션은 영원히 모르고, Codex 에서 주입 모드로 뜨면 선언한 capability 를 아무도 구현하지 않는다.
-
-### 5. 훅을 설치한다
-
-MCP 서버는 세션에 먼저 말을 걸지 못한다. 도착을 알리는 것은 훅이다.
-
-```bash
-bun run <repo>/src/install/hooks.ts
-```
-
-Claude Code 와 Codex 가 같은 `hooks.json` 형식을 쓰므로 같은 스크립트가 양쪽을 설치한다.
-
-**Codex 는 훅에 trust 승인을 요구한다.** 승인하지 않으면 MCP 툴은 붙었는데 알림만 오지 않는 상태가 된다. 스크립트를 수정하면 해시가 바뀌어 재승인이 필요하다.
-
-### 6. 한 기계의 두 에이전트를 서로 다른 참여자로 세운다 (선택)
+### 5. 한 기계의 두 에이전트를 서로 다른 참여자로 세운다 (선택)
 
 Codex 와 Claude 를 **서로에게 말을 거는 두 참여자**로 쓰려면 설정 파일을 갈라야 한다. 시드가 곧 신원이라, 같은 파일을 읽으면 두 에이전트는 같은 키·같은 저장소를 쓴다 — 자기 자신에게 말을 거는 셈이라 채널이 성립하지 않는다.
 
@@ -172,29 +186,48 @@ Codex 와 Claude 를 **서로에게 말을 거는 두 참여자**로 쓰려면 �
 두 번째 신원을 만든다.
 
 ```bash
-bun run <repo>/src/adapter/bin.ts init \
+bunx agent-channel-mesh init \
   --config ~/.agent-channel-mesh/codex.json \
   --relay https://relay.example --label alice-codex
 ```
 
 두 신원을 `axis: "internal"` 채널로 묶는다 — 서로의 `members` 블록을 상대 설정에 넣고 같은 채널 비밀을 쓴다. 같은 사람의 두 세션이므로 지문 대조는 화면에서 바로 한다.
 
-등록과 훅에 각자의 설정을 지정한다.
+플러그인이 등록한 MCP 명령에는 손댈 자리가 없으므로, 어느 신원을 읽을지는 **에이전트를 띄우는 환경**이 정한다. 기본 경로를 Claude 에게 두고 Codex 만 옮긴다.
 
 ```bash
-claude mcp add agent-channel-mesh -- bun run <repo>/src/adapter/bin.ts \
-  --delivery both  --config ~/.agent-channel-mesh/config.json
-codex  mcp add agent-channel-mesh -- bun run <repo>/src/adapter/bin.ts \
-  --delivery inbox --config ~/.agent-channel-mesh/codex.json
+ACM_CONFIG=~/.agent-channel-mesh/codex.json codex
+```
 
-bun run <repo>/src/install/hooks.ts \
+`ACM_CONFIG` 를 셸 프로필에 export 하지 않는다 — 같은 셸에서 뜬 Claude 까지 그 신원을 읽어 두 에이전트가 다시 한 참여자로 합쳐진다. 읽을 설정은 `--config` → `ACM_CONFIG` → 기본 경로 순으로 정해진다.
+
+## 플러그인 없이 붙이기 (개발용)
+
+이 레포를 고치면서 그 자리에서 시험할 때는 npm 판이 아니라 작업 트리를 물려야 한다. 사용자용 경로가 아니다.
+
+```bash
+claude mcp add agent-channel-mesh -- bun run "$PWD/src/adapter/bin.ts" --delivery both
+codex  mcp add agent-channel-mesh -- bun run "$PWD/src/adapter/bin.ts" --delivery inbox
+
+bun run src/install/hooks.ts
+```
+
+`--delivery` 는 필수다. 환경을 보고 추측하면 틀렸을 때 조용히 틀린다 — Claude 에서 수신함 모드로 뜨면 메시지가 도착해도 세션은 영원히 모르고, Codex 에서 주입 모드로 뜨면 선언한 capability 를 아무도 구현하지 않는다.
+
+훅 설치기는 두 에이전트의 `hooks.json` 을 함께 쓴다. 신원을 갈랐다면 각자의 설정을 지정한다 — 두 에이전트에 같은 경로를 주면 거부한다.
+
+```bash
+bun run src/install/hooks.ts \
   --claude-config ~/.agent-channel-mesh/config.json \
   --codex-config  ~/.agent-channel-mesh/codex.json
 ```
 
-훅이 읽을 설정은 `--config` → `ACM_CONFIG` → 기본 경로 순으로 정해진다. **플래그가 환경변수를 이긴다** — 에이전트가 물려주는 환경에 `ACM_CONFIG` 가 남아 있다고 해서 설치기가 못 박아 둔 신원이 뒤집히면 안 된다. 토큰과 달리 설정 **경로**는 비밀이 아니라 명령줄에 남아도 된다.
+플러그인 산출물(매니페스트·훅)은 손으로 고치지 않는다. 생성기를 고치고 다시 뽑는다.
 
-두 에이전트에 같은 경로를 주면 설치기가 거부한다. 에이전트를 하나만 쓰거나 둘을 한 참여자로 묶을 생각이면 두 플래그를 모두 생략하는 것이 맞다.
+```bash
+bun run plugin
+bun test
+```
 
 ## 배포
 
@@ -269,8 +302,9 @@ Cron 스케줄의 **타임존은 항상 UTC** 다. `0 21 * * 0` 은 일요일 21
 
 ## 요구 사항
 
-- [Bun](https://bun.sh)
-- Claude Code (채널 지원 버전) 또는 Codex (외부 MCP 서버 지원 버전)
+- [Bun](https://bun.sh) — 훅과 어댑터가 `bunx` 로 뜬다
+- Claude Code 또는 Codex. 둘 다 **플러그인과 훅을 지원하는 버전**이어야 한다 — 훅이 없으면 도착 알림이 없고, 툴은 붙었는데 아무도 말을 걸지 않는 상태가 된다.
+- 채널 주입(Claude 의 즉시 도착)은 `--dangerously-load-development-channels` 에 걸린 실험 기능이다. 없어도 훅과 수신함으로 동작한다.
 
 ## 라이선스
 

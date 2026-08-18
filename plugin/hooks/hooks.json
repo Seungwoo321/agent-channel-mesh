@@ -1,0 +1,42 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bunx agent-channel-mesh@0.1.0 hook --event SessionStart",
+            "timeout": 10,
+            "additionalContextLimit": 12000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bunx agent-channel-mesh@0.1.0 hook --event UserPromptSubmit",
+            "timeout": 10,
+            "additionalContextLimit": 12000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bunx agent-channel-mesh@0.1.0 hook --event PostToolUse",
+            "timeout": 10,
+            "additionalContextLimit": 12000
+          }
+        ]
+      }
+    ]
+  }
+}
