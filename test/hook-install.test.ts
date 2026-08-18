@@ -11,7 +11,14 @@ import { test, expect, describe, beforeEach, afterEach } from 'bun:test'
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { install, mergeHooks, hookCommand, HOOK_MARKER } from '../src/install/hooks.js'
+import {
+  install,
+  mergeHooks,
+  hookCommand,
+  parseFlag,
+  checkArgs,
+  HOOK_MARKER,
+} from '../src/install/hooks.js'
 import { HOOK_CONTEXT_LIMIT } from '../src/install/notify.js'
 
 let home: string
@@ -211,5 +218,97 @@ describe('mergeHooks', () => {
   test('없던 파일(undefined)도 받는다', () => {
     const ours = { Stop: [{ hooks: [{ type: 'command' as const, command: 'c' }] }] }
     expect(mergeHooks(undefined, ours)).toEqual(ours)
+  })
+})
+
+/**
+ * 에이전트별 신원 (§6.4)
+ *
+ * 지키는 것은 하나다 — **한 기계의 두 에이전트를 서로 다른 참여자로 세울 수
+ * 있어야 한다.** 그러지 못하면 둘이 같은 저장소를 보고, 도착한 메시지를
+ * `claimUndelivered` 가 먼저 집는 쪽에 준다. 그건 유실이 아니라 오배달이라
+ * 어느 화면에도 이상이 보이지 않는다.
+ */
+describe('에이전트별 설정 (§6.4)', () => {
+  const CLAUDE_CFG = '/home/me/.agent-channel-mesh/claude.json'
+  const CODEX_CFG = '/home/me/.agent-channel-mesh/codex.json'
+
+  test('주지 않으면 --config 가 붙지 않는다 — 에이전트 하나만 쓰는 경우가 기본이다', async () => {
+    await run()
+    for (const p of [claudePath(), codexPath()]) {
+      const doc = await readJson(p)
+      const commands = Object.values(doc.hooks).flatMap((entries: any) =>
+        entries.flatMap((e: any) => e.hooks.map((h: any) => h.command)),
+      )
+      expect(commands.length).toBeGreaterThan(0)
+      expect(commands.every((c: string) => !c.includes('--config'))).toBe(true)
+    }
+  })
+
+  test('주면 각자 자기 것을 읽는다', async () => {
+    await install({
+      home,
+      script: SCRIPT,
+      runtime: RUNTIME,
+      claudeConfig: CLAUDE_CFG,
+      codexConfig: CODEX_CFG,
+    })
+
+    const claude = await readJson(claudePath())
+    const codex = await readJson(codexPath())
+    const commandsOf = (doc: any) =>
+      Object.values(doc.hooks).flatMap((entries: any) =>
+        entries.flatMap((e: any) => e.hooks.map((h: any) => h.command)),
+      ) as string[]
+
+    // 모든 이벤트에 빠짐없이 실려야 한다. 하나라도 빠지면 그 이벤트에서만
+    // 남의 신원으로 도는, 재현이 어려운 형태의 고장이 된다.
+    expect(commandsOf(claude).every(c => c.includes(`--config "${CLAUDE_CFG}"`))).toBe(true)
+    expect(commandsOf(codex).every(c => c.includes(`--config "${CODEX_CFG}"`))).toBe(true)
+    expect(commandsOf(claude).some(c => c.includes(CODEX_CFG))).toBe(false)
+  })
+
+  test('둘에 같은 경로를 주면 쓰기 전에 죽는다', async () => {
+    await expect(
+      install({ home, script: SCRIPT, runtime: RUNTIME, claudeConfig: '/x.json', codexConfig: '/x.json' }),
+    ).rejects.toThrow(/같은 설정 파일/)
+  })
+
+  test('설정 경로의 큰따옴표는 명령을 만들기 전에 막는다', () => {
+    expect(() => hookCommand(RUNTIME, SCRIPT, 'Stop', '/a"b.json')).toThrow(/큰따옴표/)
+  })
+})
+
+/**
+ * 설치기 인자 (§6.4)
+ *
+ * `--claude-cofnig` 같은 오타가 무시되면 설치는 "성공했다"고 출력하면서
+ * 두 에이전트를 같은 신원으로 묶는다. 그 고장은 화면 어디에도 안 보이므로,
+ * 모르는 인자는 반드시 실패로 끝나야 한다.
+ */
+describe('설치기 인자', () => {
+  test('아는 인자만 있으면 통과한다', () => {
+    expect(() =>
+      checkArgs(['--dry-run', '--claude-config', '/a.json', '--codex-config', '/b.json']),
+    ).not.toThrow()
+    expect(() => checkArgs([])).not.toThrow()
+  })
+
+  test('오타는 조용히 무시되지 않는다', () => {
+    expect(() => checkArgs(['--claude-cofnig', '/a.json'])).toThrow(/모르는 인자/)
+  })
+
+  test('플래그의 값은 인자로 오해하지 않는다', () => {
+    // 값이 `--` 로 시작하지 않는 한 그것을 모르는 인자로 세면 안 된다.
+    expect(() => checkArgs(['--codex-config', 'codex.json'])).not.toThrow()
+  })
+
+  test('값이 없는 플래그는 다음 플래그를 값으로 삼지 않는다', () => {
+    expect(() => parseFlag(['--claude-config', '--dry-run'], '--claude-config')).toThrow(/값이 없다/)
+    expect(() => parseFlag(['--claude-config'], '--claude-config')).toThrow(/값이 없다/)
+  })
+
+  test('플래그가 없으면 undefined — 기본 경로를 쓴다', () => {
+    expect(parseFlag(['--dry-run'], '--claude-config')).toBeUndefined()
   })
 })

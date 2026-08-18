@@ -18,9 +18,11 @@ import {
   collect,
   runHook,
   parseEvent,
+  parseConfigPath,
   HOOK_BATCH_LIMIT,
   HOOK_CONTEXT_LIMIT,
 } from '../src/install/notify.js'
+import { DEFAULT_CONFIG_PATH } from '../src/adapter/config.js'
 
 let dir: string
 let store: MessageStore
@@ -188,4 +190,33 @@ describe('프로세스로 돌려도 세션을 세우지 않는다', () => {
     // 서브프로세스를 새로 띄우는 테스트다 — 전체 스위트와 같이 돌 때는 런타임
     // 기동만으로 기본 제한(5초)을 넘긴다. 기다리는 시간을 넉넉히 준다.
   }, 30_000)
+})
+
+/**
+ * 어느 설정을 읽는가 (§6.4)
+ *
+ * 설치기가 훅에 못 박아 둔 신원이, 에이전트가 물려주는 환경변수 하나에
+ * 뒤집히면 안 된다 — 그러면 두 에이전트가 조용히 같은 수신함을 보게 된다.
+ */
+describe('parseConfigPath (§6.4)', () => {
+  test('--config 가 ACM_CONFIG 를 이긴다', () => {
+    expect(parseConfigPath(['--config', '/a.json'], { ACM_CONFIG: '/b.json' })).toBe('/a.json')
+  })
+
+  test('--config 가 없으면 ACM_CONFIG', () => {
+    expect(parseConfigPath(['--event', 'Stop'], { ACM_CONFIG: '/b.json' })).toBe('/b.json')
+  })
+
+  test('둘 다 없으면 기본 경로', () => {
+    expect(parseConfigPath([], {})).toBe(DEFAULT_CONFIG_PATH)
+  })
+
+  test('값이 비었거나 다음 플래그면 못 본 것으로 친다', () => {
+    expect(parseConfigPath(['--config'], {})).toBe(DEFAULT_CONFIG_PATH)
+    expect(parseConfigPath(['--config', '--event', 'Stop'], {})).toBe(DEFAULT_CONFIG_PATH)
+  })
+
+  test('공백뿐인 ACM_CONFIG 는 없는 것과 같다', () => {
+    expect(parseConfigPath([], { ACM_CONFIG: '   ' })).toBe(DEFAULT_CONFIG_PATH)
+  })
 })

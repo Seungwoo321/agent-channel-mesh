@@ -217,6 +217,25 @@ export function parseEvent(argv: readonly string[]): string {
 }
 
 /**
+ * 이 훅이 읽을 설정 파일 (§6.4).
+ *
+ * 우선순위는 `--config` → `ACM_CONFIG` → 기본값이다. 플래그가 환경변수를
+ * 이기는 이유는 **설치기가 쓰는 쪽이 플래그**이기 때문이다 — 에이전트가
+ * 물려주는 환경에 `ACM_CONFIG` 가 남아 있다고 해서, 설치기가 그 에이전트용
+ * 으로 못 박아 둔 신원이 뒤집히면 안 된다.
+ */
+export function parseConfigPath(
+  argv: readonly string[],
+  env: Record<string, string | undefined> = process.env,
+): string {
+  const i = argv.indexOf('--config')
+  const flag = i >= 0 ? argv[i + 1] : undefined
+  if (flag !== undefined && flag !== '' && !flag.startsWith('--')) return flag
+  const fromEnv = env.ACM_CONFIG?.trim()
+  return fromEnv !== undefined && fromEnv !== '' ? fromEnv : DEFAULT_CONFIG_PATH
+}
+
+/**
  * 진입점.
  *
  * **어떤 경우에도 0 으로 끝난다.** 훅이 실패 코드를 내면 에이전트에 따라
@@ -224,8 +243,7 @@ export function parseEvent(argv: readonly string[]): string {
  * 세션을 세우는 것은 안전망이 만드는 사고다. 진단은 stderr 로만 남긴다.
  */
 async function main(argv: readonly string[]): Promise<void> {
-  const path = process.env.ACM_CONFIG ?? DEFAULT_CONFIG_PATH
-  const config = await loadConfig(path)
+  const config = await loadConfig(parseConfigPath(argv))
   const store = new MessageStore(storeOptionsOf(config.store))
   const out = await runHook(parseEvent(argv), store)
   process.stdout.write(JSON.stringify(out))

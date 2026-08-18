@@ -91,22 +91,33 @@ type MergedHooks = Record<string, unknown>
  * 훅은 에이전트가 물려주는 환경에서 돌고, 그 `PATH` 에 `bun` 이 없을 수 있다.
  * 그러면 훅은 등록됐는데 매번 조용히 실패한다 — 정확히 이 설치기가 막으려는
  * "동작하는 것처럼 보이는 고장"이다.
+ *
+ * `config` 를 주면 `--config` 로 실어 그 에이전트만의 신원을 쓰게 한다.
+ * 환경변수(`ACM_CONFIG`)로 하지 않는 이유는 두 가지다 — 훅 명령의 실행
+ * 방식이 에이전트마다 갈려 `VAR=x cmd` 접두가 통한다는 보장이 없고,
+ * 설정 **경로**는 비밀이 아니라 명령줄에 남아도 되는 값이다(토큰과 다르다).
  */
-export function hookCommand(runtime: string, script: string, event: string): string {
-  for (const p of [runtime, script]) {
+export function hookCommand(
+  runtime: string,
+  script: string,
+  event: string,
+  config?: string,
+): string {
+  for (const p of [runtime, script, ...(config === undefined ? [] : [config])]) {
     if (p.includes('"')) throw new Error(`경로에 큰따옴표가 있어 명령을 만들 수 없다: ${p}`)
   }
-  return `"${runtime}" run "${script}" --event ${event}`
+  const tail = config === undefined ? '' : ` --config "${config}"`
+  return `"${runtime}" run "${script}" --event ${event}${tail}`
 }
 
 /** Claude Code 의 `hooks` 값. matcher 가 없는 이벤트는 키 자체를 뺀다. */
-export function claudeHooks(runtime: string, script: string): HookMap {
+export function claudeHooks(runtime: string, script: string, config?: string): HookMap {
   const out: HookMap = {}
   for (const e of HOOK_EVENTS) {
     out[e.name] = [
       {
         ...(e.matcher !== undefined ? { matcher: e.matcher } : {}),
-        hooks: [{ type: 'command', command: hookCommand(runtime, script, e.name) }],
+        hooks: [{ type: 'command', command: hookCommand(runtime, script, e.name, config) }],
       },
     ]
   }
@@ -120,7 +131,7 @@ export function claudeHooks(runtime: string, script: string): HookMap {
  * 샘플링 루프 안에서도** 회수된다. 긴 작업을 도는 세션이 턴 경계를 기다리지
  * 않고 알림을 받는 유일한 길이다 (§6.6).
  */
-export function codexHooks(runtime: string, script: string): HookMap {
+export function codexHooks(runtime: string, script: string, config?: string): HookMap {
   const out: HookMap = {}
   for (const e of HOOK_EVENTS) {
     out[e.name] = [
@@ -129,7 +140,7 @@ export function codexHooks(runtime: string, script: string): HookMap {
         hooks: [
           {
             type: 'command',
-            command: hookCommand(runtime, script, e.name),
+            command: hookCommand(runtime, script, e.name, config),
             async: true,
             timeout: CODEX_TIMEOUT_SEC,
             additionalContextLimit: CODEX_CONTEXT_LIMIT,
@@ -223,6 +234,21 @@ export interface InstallOptions {
   readonly runtime?: string
   /** 쓰지 않고 계획만 만든다. */
   readonly dryRun?: boolean
+  /**
+   * 에이전트별 설정 파일 (§6.4).
+   *
+   * **한 기계에서 두 에이전트를 서로 다른 참여자로 쓸 때 필수다.** 생략하면
+   * 둘 다 기본 경로를 읽어 **같은 신원 · 같은 저장소**가 된다. 그러면 도착한
+   * 메시지를 `claimUndelivered` 가 먼저 집는 쪽에 주므로, 팀원이 Claude 에게
+   * 보낸 말이 Codex 세션으로 들어가고 Claude 에는 영영 안 나타난다 — 유실이
+   * 아니라 **오배달**이라 어느 쪽 화면에도 이상이 보이지 않는다.
+   *
+   * 에이전트를 하나만 쓰거나 둘을 같은 참여자로 묶을 생각이면 생략이 맞다.
+   * 그래서 기본값을 "따로"로 두지 않는다 — 신원을 쪼개는 것은 채널 구성이
+   * 달라지는 일이고, 설치기가 사용자 모르게 정할 문제가 아니다.
+   */
+  readonly claudeConfig?: string
+  readonly codexConfig?: string
 }
 
 export interface InstallResult {
@@ -248,9 +274,32 @@ export async function install(options: InstallOptions = {}): Promise<InstallResu
   const runtime = options.runtime ?? process.execPath
   const script = options.script ?? (await findScript())
 
+  if (
+    options.claudeConfig !== undefined &&
+    options.codexConfig !== undefined &&
+    options.claudeConfig === options.codexConfig
+  ) {
+    throw new Error(
+      '두 에이전트에 같은 설정 파일을 줬다 — 그러면 신원이 하나라 서로에게 보낼 수 없고, ' +
+        '도착한 메시지는 먼저 집는 쪽이 가져간다. 경로를 다르게 주거나 둘 다 생략해라.',
+    )
+  }
+
   return [
-    await writeClaude(join(home, '.claude', 'settings.json'), runtime, script, options.dryRun),
-    await writeCodex(join(home, '.codex', 'hooks.json'), runtime, script, options.dryRun),
+    await writeClaude(
+      join(home, '.claude', 'settings.json'),
+      runtime,
+      script,
+      options.dryRun,
+      options.claudeConfig,
+    ),
+    await writeCodex(
+      join(home, '.codex', 'hooks.json'),
+      runtime,
+      script,
+      options.dryRun,
+      options.codexConfig,
+    ),
   ]
 }
 
@@ -266,10 +315,11 @@ async function writeClaude(
   runtime: string,
   script: string,
   dryRun = false,
+  config?: string,
 ): Promise<InstallResult> {
   const raw = await readJson(path)
   const doc = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? { ...raw } : {}
-  const merged = mergeHooks((doc as { hooks?: unknown }).hooks, claudeHooks(runtime, script))
+  const merged = mergeHooks((doc as { hooks?: unknown }).hooks, claudeHooks(runtime, script, config))
   const content = `${JSON.stringify({ ...doc, hooks: merged }, null, 2)}\n`
 
   const backup = dryRun ? undefined : await save(path, content)
@@ -282,10 +332,11 @@ async function writeCodex(
   runtime: string,
   script: string,
   dryRun = false,
+  config?: string,
 ): Promise<InstallResult> {
   const raw = await readJson(path)
   const doc = typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? { ...raw } : {}
-  const merged = mergeHooks((doc as { hooks?: unknown }).hooks, codexHooks(runtime, script))
+  const merged = mergeHooks((doc as { hooks?: unknown }).hooks, codexHooks(runtime, script, config))
   const content = `${JSON.stringify(
     { description: 'agent-channel-mesh — 도착한 메시지를 세션에 알린다', ...doc, hooks: merged },
     null,
@@ -375,9 +426,62 @@ export const CODEX_TRUST_NOTE =
   '승인 전에는 등록만 되고 실행되지 않는다 — 툴은 붙었는데 알림만 안 오는 상태가 된다.\n' +
   '훅 스크립트를 고치면 해시가 바뀌어 다시 승인해야 한다.'
 
+/** `--이름 <값>` 하나를 읽는다. 없으면 `undefined` — 그러면 기본 경로를 쓴다. */
+export function parseFlag(argv: readonly string[], name: string): string | undefined {
+  const i = argv.indexOf(name)
+  if (i < 0) return undefined
+  const value = argv[i + 1]
+  if (value === undefined || value.startsWith('--')) throw new Error(`${name} 에 값이 없다.`)
+  return value
+}
+
+export const USAGE = `agent-channel-mesh 훅 설치
+
+  --dry-run                 쓰지 않고, 무엇을 어디에 쓸지만 보여준다
+  --claude-config <path>    Claude 훅이 읽을 설정 파일 (§6.4)
+  --codex-config <path>     Codex 훅이 읽을 설정 파일 (§6.4)
+
+  뒤의 두 플래그는 한 기계의 두 에이전트를 **서로 다른 참여자**로 쓸 때만 준다.
+  생략하면 양쪽 다 기본 경로를 읽어 같은 신원 · 같은 저장소가 되고, 도착한
+  메시지는 먼저 집는 쪽이 가져간다 — 유실이 아니라 오배달이라 어느 화면에도
+  이상이 보이지 않는다. 에이전트가 하나거나 둘을 한 참여자로 묶을 생각이면
+  생략하는 것이 맞다.
+`
+
+/**
+ * 모르는 인자는 무시하지 않고 던진다.
+ *
+ * `--claude-cofnig` 같은 오타를 무시하면 **조용히 기본 경로로 설치된다** —
+ * 성공했다고 출력해 놓고 두 에이전트가 같은 신원을 쓰는, 이 도구에서 가장
+ * 알아채기 어려운 형태의 고장이다.
+ */
+export function checkArgs(argv: readonly string[]): void {
+  const valued = new Set(['--claude-config', '--codex-config'])
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!
+    if (valued.has(arg)) {
+      i++
+      continue
+    }
+    if (arg === '--dry-run' || arg === '--help' || arg === '-h') continue
+    throw new Error(`모르는 인자: ${arg}\n\n${USAGE}`)
+  }
+}
+
 async function main(argv: readonly string[]): Promise<void> {
+  checkArgs(argv)
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(USAGE)
+    return
+  }
   const dryRun = argv.includes('--dry-run')
-  const results = await install({ dryRun })
+  const claudeConfig = parseFlag(argv, '--claude-config')
+  const codexConfig = parseFlag(argv, '--codex-config')
+  const results = await install({
+    dryRun,
+    ...(claudeConfig === undefined ? {} : { claudeConfig }),
+    ...(codexConfig === undefined ? {} : { codexConfig }),
+  })
 
   for (const r of results) {
     process.stdout.write(

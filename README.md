@@ -112,6 +112,17 @@ bun run src/adapter/bin.ts whoami --label alice
 
 채널 이름은 로컬 별칭일 뿐이라 참여자끼리 같을 필요가 없다 — 릴레이는 이름을 모른다. 자세한 근거는 [docs/architecture.md](docs/architecture.md) §5.1~§5.3.
 
+**팀원에게 넘길 것은 넷이고, 경로가 셋으로 갈린다.**
+
+| 값 | 어떻게 넘기나 | 왜 |
+|---|---|---|
+| 릴레이 주소 | 아무 경로나 | 비밀이 아니다 |
+| 릴레이 쓰기 토큰(§10.13) | 암호화된 경로 | 이걸 쥔 사람은 그 릴레이에 봉투를 올릴 수 있다 |
+| 채널 비밀 | 암호화된 경로 | 이걸 쥔 사람이 곧 멤버다 |
+| 공개키(`members`) | 아무 경로나 — **단 지문은 다른 경로로 대조**(2단계) | 공개값이지만 바꿔치기가 가능하다 |
+
+릴레이 토큰과 채널 비밀은 **다른 것을 연다.** 토큰은 "이 릴레이를 쓸 자격"까지만이라 어느 채널에 올리는지는 가리지 않는다 — 팀을 나누는 것은 채널 비밀이다. 팀원을 끊으려면 채널 비밀을 새로 만들어 남은 사람에게만 다시 준다.
+
 ```jsonc
 // ~/.agent-channel-mesh/config.json
 {
@@ -151,6 +162,39 @@ bun run <repo>/src/install/hooks.ts
 Claude Code 와 Codex 가 같은 `hooks.json` 형식을 쓰므로 같은 스크립트가 양쪽을 설치한다.
 
 **Codex 는 훅에 trust 승인을 요구한다.** 승인하지 않으면 MCP 툴은 붙었는데 알림만 오지 않는 상태가 된다. 스크립트를 수정하면 해시가 바뀌어 재승인이 필요하다.
+
+### 6. 한 기계의 두 에이전트를 서로 다른 참여자로 세운다 (선택)
+
+Codex 와 Claude 를 **서로에게 말을 거는 두 참여자**로 쓰려면 설정 파일을 갈라야 한다. 시드가 곧 신원이라, 같은 파일을 읽으면 두 에이전트는 같은 키·같은 저장소를 쓴다 — 자기 자신에게 말을 거는 셈이라 채널이 성립하지 않는다.
+
+**갈라 놓지 않으면 나는 고장은 유실이 아니라 오배달이다.** 도착한 메시지는 `claimUndelivered` 가 먼저 집는 쪽으로 간다. 팀원이 Claude 에게 한 말이 Codex 세션에 뜨고 Claude 에는 영영 안 나타나는데, 어느 화면에도 오류가 보이지 않는다.
+
+두 번째 신원을 만든다.
+
+```bash
+bun run <repo>/src/adapter/bin.ts init \
+  --config ~/.agent-channel-mesh/codex.json \
+  --relay https://relay.example --label alice-codex
+```
+
+두 신원을 `axis: "internal"` 채널로 묶는다 — 서로의 `members` 블록을 상대 설정에 넣고 같은 채널 비밀을 쓴다. 같은 사람의 두 세션이므로 지문 대조는 화면에서 바로 한다.
+
+등록과 훅에 각자의 설정을 지정한다.
+
+```bash
+claude mcp add agent-channel-mesh -- bun run <repo>/src/adapter/bin.ts \
+  --delivery both  --config ~/.agent-channel-mesh/config.json
+codex  mcp add agent-channel-mesh -- bun run <repo>/src/adapter/bin.ts \
+  --delivery inbox --config ~/.agent-channel-mesh/codex.json
+
+bun run <repo>/src/install/hooks.ts \
+  --claude-config ~/.agent-channel-mesh/config.json \
+  --codex-config  ~/.agent-channel-mesh/codex.json
+```
+
+훅이 읽을 설정은 `--config` → `ACM_CONFIG` → 기본 경로 순으로 정해진다. **플래그가 환경변수를 이긴다** — 에이전트가 물려주는 환경에 `ACM_CONFIG` 가 남아 있다고 해서 설치기가 못 박아 둔 신원이 뒤집히면 안 된다. 토큰과 달리 설정 **경로**는 비밀이 아니라 명령줄에 남아도 된다.
+
+두 에이전트에 같은 경로를 주면 설치기가 거부한다. 에이전트를 하나만 쓰거나 둘을 한 참여자로 묶을 생각이면 두 플래그를 모두 생략하는 것이 맞다.
 
 ## 배포
 
