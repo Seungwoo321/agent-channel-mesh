@@ -22,7 +22,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { MeshNode, Dropped } from '../node/node.js'
-import { MessageStore } from '../store/store.js'
+import { MessageStore, type StoredMessage } from '../store/store.js'
 import { callTool, SEND_TOOL, CHANNELS_TOOL, INBOX_TOOL, type ToolSpec } from './tools.js'
 import { ClaudeAdapter, CAPABILITIES, INSTRUCTIONS } from './claude.js'
 import { hex } from './bundle.js'
@@ -50,6 +50,17 @@ export type Delivery = 'push' | 'inbox' | 'both'
  * 릴레이 폴링 한 배치가 들어오기에 충분한 폭이다.
  */
 export const DEFAULT_COALESCE_MS = 1500
+
+/**
+ * 종료할 때 진행 중인 묶음의 뒷정리를 기다리는 상한(ms).
+ *
+ * 기다리는 대상은 주입이 아니라 **선점 정리**다 — 선점만 찍힌 채 프로세스가
+ * 사라지면 리스 기한(기본 60초)까지 훅 안전망에도 안 보이기 때문이다. 정상
+ * 경로에서 그 정리는 파일 쓰기 한 번이라 ms 단위로 끝난다. 2초는 그보다 세
+ * 자릿수 넉넉하면서, 파이프가 이미 끊긴 경우에 종료가 눈에 띄게 걸리지 않는
+ * 폭이다.
+ */
+export const STOP_SETTLE_MS = 2000
 
 export interface ServeOptions {
   readonly node: MeshNode
@@ -138,26 +149,65 @@ export async function serve(options: ServeOptions): Promise<{ stop: () => Promis
   /**
    * 진행 중인 묶음. 다음 묶음은 이 프라미스가 끝난 뒤에 시작한다.
    *
-   * 임계 구간은 합류 창이 아니라 **드레인 → 주입 → 표시** 전체다.
-   * `undelivered()` 는 read-modify-write 의 read 이고, 그 write 인
-   * `markDelivered()` 는 `inject()` 를 기다린 뒤에야 찍힌다. 그 사이에
-   * 다음 묶음이 저장소를 읽으면 아직 표시되지 않은 같은 메시지를 다시
-   * 받아 두 번 주입한다 — `delivered` 상태만으로는 못 막는다. 상태는
-   * 이미 끝난 전달을 기억할 뿐, 진행 중인 전달을 알리지 못한다.
+   * 임계 구간은 합류 창이 아니라 **드레인 → 주입 → 표시** 전체다. 주입은
+   * 호스트가 파이프를 읽어 줄 때까지 걸리고, 그 사이에 다음 묶음이 같은
+   * 메시지를 다시 집으면 두 번 주입된다. `delivered` 상태만으로는 못
+   * 막는다 — 상태는 **이미 끝난** 전달을 기억할 뿐, 진행 중인 전달을
+   * 알리지 못하기 때문이다.
    *
-   * 반대로 주입 **전에** 미리 찍고 실패하면 되돌리는 방식은 쓰지 않는다.
-   * 그 사이에 프로세스가 죽으면 되돌릴 주체가 없어 메시지가 영영 사라진다
-   * — 훅 안전망(§6.6)이 집어 갈 근거가 미전달 상태 하나뿐이기 때문이다.
+   * 이 사슬은 그중 **한 프로세스 안**만 직렬화한다. 훅은 별개 프로세스라
+   * 이 프라미스를 보지 못하므로, 프로세스를 건너는 배타는 선점(리스)이
+   * 맡는다 — 아래 {@link drain} 참고.
    */
   let inFlight: Promise<void> = Promise.resolve()
 
+  /**
+   * 미전달분을 **선점해서** 꺼내 주입하고, 결과에 따라 굳히거나 풀어 준다.
+   *
+   * 조회(`undelivered`)가 아니라 선점(`claimUndelivered`)인 이유: 훅
+   * 안전망(§6.6)은 별개 프로세스로 같은 저장소를 본다. 조회는 아무 흔적을
+   * 남기지 않으므로 어댑터가 주입하는 동안 훅이 같은 메시지를 집어 들고,
+   * 세션에는 같은 말이 두 번 뜬다. 선점은 잠금 안에서 `claimedAt` 을 찍고
+   * 돌려주므로, 찍힌 것은 다른 프로세스의 선점에 걸리지 않는다.
+   *
+   * 그럼에도 `delivered` 를 주입 **전에** 찍지는 않는다. 그 사이에
+   * 프로세스가 죽으면 되돌릴 주체가 없어 메시지가 영영 사라진다 — 훅이
+   * 집어 갈 근거가 미전달 상태 하나뿐이기 때문이다. 선점은 그 점에서
+   * 다르다: 리스는 기한(`claimTtlMs`)이 있어 홀더가 죽으면 저절로 풀린다.
+   */
   const drain = async () => {
-    // 저장소에서 다시 모은다 — 드레인 결과를 들고 있다가 주입하면 훅이나
-    // `inbox` 툴이 그 사이에 표시한 것을 못 보고 두 번 알리게 된다.
-    const batch = await store.undelivered()
+    const batch = await store.claimUndelivered()
     if (batch.length === 0) return
-    const delivered = await adapter!.inject(batch)
-    if (delivered.length > 0) await store.markDelivered(delivered)
+
+    let delivered: readonly string[] = []
+    try {
+      delivered = await adapter!.inject(batch)
+    } finally {
+      // 주입이 던져도 정리한다. 안 하면 선점한 묶음이 기한(기본 60초)까지
+      // 아무에게도 안 보이고, 그동안 훅 안전망이 그 메시지를 못 집는다.
+      await settle(batch, delivered)
+    }
+  }
+
+  /**
+   * 선점을 정리한다. 나간 것은 전달로 굳히고, **못 나간 것은 즉시 푼다.**
+   *
+   * 푸는 것이 핵심이다. 채널 하나가 실패하면 `inject` 는 그 id 를 돌려주지
+   * 않는데(§claude.ts), 선점만 남고 아무도 안 풀면 그 메시지는 기한이 찰
+   * 때까지 훅에도 안 잡힌다. 실패는 즉시 다음 창과 훅 둘 다에 열려야 한다.
+   *
+   * 여기서 나는 예외는 삼킨다 — 원래의 주입 실패를 덮으면 진단이 어긋나고,
+   * 정리에 실패해도 리스 기한이 같은 일을 늦게나마 해 준다.
+   */
+  const settle = async (batch: readonly StoredMessage[], delivered: readonly string[]) => {
+    const sent = new Set(delivered)
+    const back = batch.filter(m => !sent.has(m.id)).map(m => m.id)
+    try {
+      if (delivered.length > 0) await store.markDelivered(delivered)
+      if (back.length > 0) await store.release(back)
+    } catch (e) {
+      warn(`선점을 정리하지 못했다: ${String(e)}`)
+    }
   }
 
   // 한 묶음이 던져도 사슬을 끊지 않는다 — 여기서 거절이 남으면 다음 묶음이
@@ -211,6 +261,17 @@ export async function serve(options: ServeOptions): Promise<{ stop: () => Promis
       // `markDelivered` 까지 찍히면 그 메시지는 어디에도 도달하지 못한다.
       if (timer !== undefined) clearTimeout(timer)
       timer = undefined
+
+      // 다만 **이미 시작된** 묶음의 뒷정리는 기다린다. 새 묶음을 여는 것과
+      // 다르다 — 선점만 찍힌 채로 프로세스가 사라지면 그 메시지는 리스
+      // 기한(기본 60초)이 찰 때까지 훅에도 안 보인다. 인계가 일어나는 바로
+      // 그 순간에 안전망이 비는 셈이라, 정리가 끝날 틈은 주고 나간다.
+      //
+      // 무한정 기다리지는 않는다. 호스트가 파이프를 이미 놓았으면 주입이
+      // 영영 안 끝나고, 그러면 종료가 걸린다. 기다림이 헛되면 리스 기한이
+      // 늦게나마 같은 일을 한다.
+      await Promise.race([inFlight, sleep(STOP_SETTLE_MS)])
+
       node.stop()
       await mcp.close()
     },
@@ -226,4 +287,8 @@ function defaultInstructions(delivery: Delivery): string {
 /** stdout 은 MCP 프레이밍이 쓴다 — 진단은 stderr 로만 나간다. */
 function warn(message: string): void {
   process.stderr.write(`[agent-channel-mesh] ${message}\n`)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
 }
