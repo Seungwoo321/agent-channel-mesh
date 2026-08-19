@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runSetup, SETUP_TOOL, SETUP_INSTRUCTIONS } from '../src/adapter/setup.js'
 import { CONFIGURE_TOOLS } from '../src/adapter/configure.js'
+import { RELAY_CHECK_TOOL, RELAY_EXPORT_TOOL } from '../src/adapter/relay-setup.js'
 import { SETUP_HINT } from '../src/install/notify.js'
 import { Adapter } from './support/adapter.js'
 
@@ -167,7 +168,14 @@ describe('설정 없는 서버 — 실제로 띄워 본다', () => {
     const { adapter } = await boot()
 
     expect(await adapter.toolNames()).toEqual(
-      [SETUP_TOOL.name, ...CONFIGURE_TOOLS.map(t => t.name)].sort(),
+      [
+        SETUP_TOOL.name,
+        // 릴레이를 정하는 것이 `setup` 보다 먼저다 — 그 값을 여기서 못 얻으면
+        // 사람이 주소를 짐작해 넣고, 그 설정은 오류 없이 아무것도 보내지 않는다.
+        RELAY_CHECK_TOOL.name,
+        RELAY_EXPORT_TOOL.name,
+        ...CONFIGURE_TOOLS.map(t => t.name),
+      ].sort(),
     )
     // 메시 툴은 없다 — 신원이 없으니 보낼 수도 읽을 수도 없다.
     expect(await adapter.toolNames()).not.toContain('send')

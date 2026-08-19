@@ -22991,6 +22991,182 @@ function message(e) {
   return e instanceof Error ? e.message : String(e);
 }
 
+// src/adapter/relay-setup.ts
+import { existsSync } from "fs";
+import { copyFile, mkdir as mkdir3, writeFile as writeFile4 } from "fs/promises";
+import { join as join3 } from "path";
+var LOCAL_PORT = 8787;
+var LOCAL_HOST = "127.0.0.1";
+var PROBE_MS = 3000;
+var RELAY_CHECK_TOOL = {
+  name: "relay_check",
+  description: "\uB9B4\uB808\uC774\uAC00 \uC900\uBE44\uB410\uB294\uC9C0 \uD655\uC778\uD55C\uB2E4. url \uC744 \uC8FC\uBA74 \uADF8 \uC8FC\uC18C\uB97C \uB450\uB4DC\uB824 \uBCF4\uACE0(\uC774\uBBF8 \uBC30\uD3EC\uB41C \uB9B4\uB808\uC774\uC5D0 \uBD99\uB294 \uACBD\uC6B0), " + "\uC8FC\uC9C0 \uC54A\uC73C\uBA74 \uC774 \uAE30\uACC4\uC758 \uB85C\uCEEC \uB9B4\uB808\uC774\uB97C \uBCF8\uB2E4 \u2014 \uC548 \uB5A0 \uC788\uC73C\uBA74 \uB744\uC6B0\uB294 \uBA85\uB839\uC744 \uADF8\uB300\uB85C \uB0B8\uB2E4. " + "\uC124\uC815\uC5D0 \uC8FC\uC18C\uB97C \uB123\uAE30 \uC804\uC5D0 \uBD80\uB978\uB2E4.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      url: {
+        type: "string",
+        description: "\uD655\uC778\uD560 \uB9B4\uB808\uC774 base URL. \uBC30\uD3EC\uB41C \uB9B4\uB808\uC774\uC5D0 \uBD99\uC744 \uB54C \uC900\uB2E4."
+      },
+      port: {
+        type: "number",
+        description: `\uB85C\uCEEC \uB9B4\uB808\uC774 \uD3EC\uD2B8. \uAE30\uBCF8 ${String(LOCAL_PORT)}.`
+      }
+    }
+  }
+};
+function relayEntry(dir = import.meta.dir) {
+  const candidates = [join3(dir, "relay.js"), join3(dir, "..", "server.ts")];
+  const found = candidates.find((p) => existsSync(p));
+  if (found === undefined) {
+    throw new Error(`\uB9B4\uB808\uC774 \uC2E4\uD589 \uD30C\uC77C\uC744 \uCC3E\uC9C0 \uBABB\uD588\uB2E4:
+  ${candidates.join(`
+  `)}`);
+  }
+  return found;
+}
+function relayCommand(port, dir) {
+  return `bun "${relayEntry(dir)}" --port ${String(port)}`;
+}
+async function probe(url) {
+  let res;
+  try {
+    res = await fetch(`${url.replace(/\/+$/, "")}/health`, {
+      signal: AbortSignal.timeout(PROBE_MS)
+    });
+  } catch (e) {
+    return { ok: false, why: e instanceof Error ? e.message : String(e) };
+  }
+  if (!res.ok)
+    return { ok: false, why: `HTTP ${String(res.status)}` };
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    return { ok: false, why: "200 \uC774\uC9C0\uB9CC JSON \uC774 \uC544\uB2C8\uB2E4 \u2014 \uB9B4\uB808\uC774\uAC00 \uC544\uB2C8\uB2E4" };
+  }
+  if (typeof body !== "object" || body === null || body.ok !== true) {
+    return { ok: false, why: `200 \uC774\uC9C0\uB9CC \uB9B4\uB808\uC774 \uC751\uB2F5\uC774 \uC544\uB2C8\uB2E4: ${JSON.stringify(body)}` };
+  }
+  return { ok: true };
+}
+async function runRelayCheck(args) {
+  const url = typeof args.url === "string" && args.url.trim() !== "" ? args.url.trim() : undefined;
+  const port = typeof args.port === "number" ? args.port : LOCAL_PORT;
+  if (url !== undefined)
+    return await checkRemote(url);
+  return await checkLocal(port);
+}
+async function checkRemote(url) {
+  const seen = await probe(url);
+  if (!seen.ok) {
+    return {
+      text: `${url} \uC740(\uB294) \uB9B4\uB808\uC774\uB85C \uB2F5\uD558\uC9C0 \uC54A\uB294\uB2E4: ${seen.why}
+` + "\uC8FC\uC18C\uB97C \uC124\uC815\uC5D0 \uB123\uC9C0 \uC54A\uB294\uB2E4 \u2014 \uD2C0\uB9B0 \uC8FC\uC18C\uB294 \uC624\uB958 \uC5C6\uC774 \uC870\uC6A9\uD788 \uC544\uBB34\uAC83\uB3C4 \uB098\uB974\uC9C0 \uC54A\uB294\uB2E4. " + "\uB9B4\uB808\uC774\uB97C \uC6B4\uC601\uD558\uB294 \uC0AC\uB78C\uC5D0\uAC8C \uC8FC\uC18C\uB97C \uB2E4\uC2DC \uD655\uC778\uD55C\uB2E4.",
+      isError: true
+    };
+  }
+  return {
+    text: `${url} \uC774(\uAC00) \uB9B4\uB808\uC774\uB85C \uB2F5\uD588\uB2E4. setup \uB610\uB294 relay_set \uC758 relay \uC5D0 \uC774 \uC8FC\uC18C\uB97C \uB123\uB294\uB2E4.
+` + "\uC4F0\uAE30 \uD1A0\uD070\uC774 \uD544\uC694\uD55C\uC9C0\uB294 \uC5EC\uAE30\uC11C \uC54C \uC218 \uC5C6\uB2E4 \u2014 /health \uB294 \uC778\uC99D\uC744 \uC694\uAD6C\uD558\uC9C0 \uC54A\uB294\uB2E4. " + `\uC6B4\uC601\uD558\uB294 \uC0AC\uB78C\uC774 \uD1A0\uD070\uC744 \uC92C\uB2E4\uBA74 \uD568\uAED8 \uB123\uB294\uB2E4.
+` + "\uC774 \uB9B4\uB808\uC774\uB294 \uC5EC\uB7EC \uC0AC\uB78C\uC774 \uD568\uAED8 \uC4F0\uB294 \uC790\uB9AC\uB2E4. \uCC44\uB110 \uCD95\uC740 external \uC774\uACE0, " + "\uB3C4\uCC29\uD55C \uB9D0\uC740 \uAE30\uBCF8 \uAD8C\uD55C\uC774 \uC77D\uAE30\uB2E4."
+  };
+}
+async function checkLocal(port) {
+  const url = `http://${LOCAL_HOST}:${String(port)}`;
+  const seen = await probe(url);
+  if (seen.ok) {
+    return {
+      text: `\uB85C\uCEEC \uB9B4\uB808\uC774\uAC00 \uC774\uBBF8 \uB5A0 \uC788\uB2E4: ${url}
+` + "setup \uB610\uB294 relay_set \uC758 relay \uC5D0 \uC774 \uC8FC\uC18C\uB97C \uB123\uB294\uB2E4."
+    };
+  }
+  let command;
+  try {
+    command = relayCommand(port);
+  } catch (e) {
+    return { text: e instanceof Error ? e.message : String(e), isError: true };
+  }
+  return {
+    text: `${url} \uC5D0\uB294 \uC544\uC9C1 \uB9B4\uB808\uC774\uAC00 \uC5C6\uB2E4 (${seen.why}).
+` + `\uC774 \uBA85\uB839\uC73C\uB85C \uB744\uC6B4\uB2E4 \u2014 \uC138\uC158\uC774 \uBC31\uADF8\uB77C\uC6B4\uB4DC\uB85C \uB3CC\uB824\uB3C4 \uB418\uACE0, \uC0AC\uC6A9\uC790\uAC00 \uB2E4\uB978 \uD130\uBBF8\uB110\uC5D0\uC11C \uC9C1\uC811 \uB3CC\uB824\uB3C4 \uB41C\uB2E4:
+
+` + `  ${command}
+
+` + `\uB5B4\uC73C\uBA74 relay \uC5D0 ${url} \uC744 \uB123\uB294\uB2E4.
+` + `${LOCAL_HOST} \uC5D0\uB9CC \uBB36\uC774\uBBC0\uB85C \uC774 \uAE30\uACC4 \uBC16\uC5D0\uC11C\uB294 \uB2FF\uC9C0 \uC54A\uB294\uB2E4 \u2014 \uB0B4 \uD074\uB85C\uB4DC\uC640 \uB0B4 \uCF54\uB371\uC2A4\uB97C \uC787\uB294 \uC6A9\uB3C4\uB2E4. ` + "\uC800\uC7A5\uC18C\uB294 \uBA54\uBAA8\uB9AC\uB77C \uD504\uB85C\uC138\uC2A4\uAC00 \uC8FD\uC73C\uBA74 \uB300\uAE30 \uC911\uC778 \uBD09\uD22C\uAC00 \uC0AC\uB77C\uC9C0\uACE0, \uADF8\uB798\uC11C \uB9B4\uB808\uC774\uB294 \uB450 \uC5D0\uC774\uC804\uD2B8\uAC00 " + `\uB9D0\uD558\uB294 \uB3D9\uC548 \uACC4\uC18D \uB5A0 \uC788\uC5B4\uC57C \uD55C\uB2E4.
+` + "\uB2E4\uB978 \uC0AC\uB78C\uACFC \uC774\uC5B4\uC9C0\uB824\uBA74 \uC774 \uB9B4\uB808\uC774\uAC00 \uC544\uB2C8\uB77C \uBC30\uD3EC\uB41C \uB9B4\uB808\uC774\uAC00 \uD544\uC694\uD558\uB2E4."
+  };
+}
+var VERCEL_JSON = {
+  $schema: "https://openapi.vercel.sh/vercel.json",
+  framework: "bun",
+  bunVersion: "1.x",
+  crons: [{ path: "/keepalive", schedule: "0 21 * * 0" }]
+};
+var INDEX_TS = `export { default } from './relay.js'
+`;
+var PACKAGE_JSON = {
+  name: "agent-channel-mesh-relay",
+  private: true,
+  type: "module"
+};
+var RELAY_EXPORT_TOOL = {
+  name: "relay_export",
+  description: "\uBC30\uD3EC\uD560 \uC218 \uC788\uB294 \uB9B4\uB808\uC774 \uB514\uB809\uD1A0\uB9AC\uB97C \uB9CC\uB4E0\uB2E4 \u2014 \uB9B4\uB808\uC774\uB97C \uC9C1\uC811 \uC6B4\uC601\uD574\uC11C \uB2E4\uB978 \uC0AC\uB78C\uB4E4\uACFC \uC4F0\uB824\uB294 \uACBD\uC6B0. " + "\uB808\uD3EC\uB97C \uD074\uB860\uD558\uC9C0 \uC54A\uB294\uB2E4. \uB9CC\uB4E0 \uB4A4 \uBC30\uD3EC \uBA85\uB839\uC740 \uC0AC\uC6A9\uC790\uAC00 \uC790\uAE30 \uACC4\uC815\uC73C\uB85C \uB3CC\uB9B0\uB2E4.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      dir: { type: "string", description: "\uB9CC\uB4E4 \uB514\uB809\uD1A0\uB9AC \uACBD\uB85C. \uC5C6\uC73C\uBA74 \uB9CC\uB4E0\uB2E4." }
+    },
+    required: ["dir"]
+  }
+};
+async function runRelayExport(args) {
+  const dir = typeof args.dir === "string" ? args.dir.trim() : "";
+  if (dir === "")
+    return { text: "dir \uC774 \uD544\uC694\uD558\uB2E4 \u2014 \uB9B4\uB808\uC774\uB97C \uB9CC\uB4E4 \uB514\uB809\uD1A0\uB9AC\uB97C \uC0AC\uC6A9\uC790\uC5D0\uAC8C \uBC1B\uB294\uB2E4.", isError: true };
+  let entry;
+  try {
+    entry = relayEntry();
+  } catch (e) {
+    return { text: e instanceof Error ? e.message : String(e), isError: true };
+  }
+  if (entry.endsWith(".ts")) {
+    return {
+      text: `\uB9B4\uB808\uC774 \uBC88\uB4E4\uC774 \uC5C6\uB2E4 (${entry} \uB294 \uC18C\uC2A4\uB2E4). \uD50C\uB7EC\uADF8\uC778\uC73C\uB85C \uAE50 \uAC83\uC774 \uC544\uB2C8\uB77C \uB808\uD3EC\uC5D0\uC11C \uB3C4\uB294 \uC911\uC774\uB77C\uBA74 ` + "`bun run plugin` \uC73C\uB85C \uBC88\uB4E4\uC744 \uBA3C\uC800 \uBF51\uB294\uB2E4.",
+      isError: true
+    };
+  }
+  try {
+    await mkdir3(dir, { recursive: true });
+    await copyFile(entry, join3(dir, "relay.js"));
+    await writeFile4(join3(dir, "index.ts"), INDEX_TS);
+    await writeFile4(join3(dir, "vercel.json"), `${JSON.stringify(VERCEL_JSON, null, 2)}
+`);
+    await writeFile4(join3(dir, "package.json"), `${JSON.stringify(PACKAGE_JSON, null, 2)}
+`);
+  } catch (e) {
+    return { text: `\uB9B4\uB808\uC774 \uB514\uB809\uD1A0\uB9AC\uB97C \uB9CC\uB4E4\uC9C0 \uBABB\uD588\uB2E4: ${e instanceof Error ? e.message : String(e)}`, isError: true };
+  }
+  return {
+    text: `${dir} \uC5D0 \uB9B4\uB808\uC774\uB97C \uB9CC\uB4E4\uC5C8\uB2E4 (index.ts \xB7 relay.js \xB7 vercel.json \xB7 package.json).
+
+` + `\uC5EC\uAE30\uC11C\uBD80\uD130\uB294 \uC0AC\uC6A9\uC790\uC758 \uACC4\uC815\uC774 \uD544\uC694\uD558\uB2E4 \u2014 \uC544\uB798\uB97C \uC0AC\uC6A9\uC790\uAC00 \uC9C1\uC811 \uB3CC\uB9B0\uB2E4:
+
+` + `  cd ${dir}
+` + `  vercel link
+` + `  vercel integration add upstash        # \uC800\uC7A5\uC18C. \uC11C\uBC84\uB9AC\uC2A4\uC5D0\uC11C \uBA54\uBAA8\uB9AC\uB85C\uB294 \uB728\uC9C0 \uC54A\uB294\uB2E4
+` + `  openssl rand -hex 32                  # \uC4F0\uAE30 \uD1A0\uD070\uC744 \uB9CC\uB4E0\uB2E4
+` + `  vercel env add ACM_RELAY_TOKEN production
+` + `  vercel env add CRON_SECRET production # keepalive cron \uC778\uC99D. \uC5C6\uC73C\uBA74 30\uC77C \uB4A4 \uC544\uCE74\uC774\uBE0C\uB41C\uB2E4
+` + `  vercel deploy --prod
+
+` + `\uB72C \uB4A4 relay_check \uC5D0 \uADF8 \uC8FC\uC18C\uB97C \uC918\uC11C \uB9B4\uB808\uC774\uB85C \uB2F5\uD558\uB294\uC9C0 \uD655\uC778\uD55C\uB2E4.
+` + "\uC8FC\uC18C\uC640 \uC4F0\uAE30 \uD1A0\uD070\uC744 \uD568\uAED8 \uC4F8 \uC0AC\uB78C\uB4E4\uC5D0\uAC8C \uB300\uC5ED \uC678\uB85C \uB098\uB208\uB2E4 \u2014 \uCC44\uB110 \uBE44\uBC00\uACFC\uB294 \uB2E4\uB978 \uAC12\uC774\uACE0, " + "\uD1A0\uD070\uC740 \uB9B4\uB808\uC774\uC5D0 \uC62C\uB9B4 \uAD8C\uD55C\uC77C \uBFD0 \uBCF8\uBB38\uC744 \uC5F4\uC9C0\uB294 \uBABB\uD55C\uB2E4."
+  };
+}
+
 // src/adapter/claude.ts
 var INSTRUCTIONS = "Messages from other agents and people arrive as " + '<channel source="agent-channel-mesh" chat_id="...">. ' + "One notification can carry several messages, oldest first, " + "each headed by sender, channel and absolute timestamps \u2014 read all of them " + "and report the current state before replying to any single one. " + "The chat_id is the channel id \u2014 pass it to the send tool to reply. " + "A message tagged [\uC751\uB2F5 \uC548 \uD568] is for context only: read it, do not reply. " + "Do not reply to your own messages.";
 var CAPABILITIES = {
@@ -23048,7 +23224,7 @@ async function serve(options) {
   const coalesceMs = options.coalesceMs ?? DEFAULT_COALESCE_MS;
   const push = delivery !== "inbox";
   const inboxTool = delivery !== "push";
-  const tools = [SEND_TOOL, CHANNELS_TOOL, WHOAMI_TOOL];
+  const tools = [SEND_TOOL, CHANNELS_TOOL, WHOAMI_TOOL, RELAY_CHECK_TOOL, RELAY_EXPORT_TOOL];
   if (inboxTool)
     tools.push(INBOX_TOOL);
   if (options.configPath !== undefined)
@@ -23060,6 +23236,14 @@ async function serve(options) {
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
   mcp.setRequestHandler(CallToolRequestSchema, async (req2) => {
     const args = req2.params.arguments ?? {};
+    if (req2.params.name === RELAY_CHECK_TOOL.name) {
+      const checked = await runRelayCheck(args);
+      return { content: [{ type: "text", text: checked.text }], isError: checked.isError };
+    }
+    if (req2.params.name === RELAY_EXPORT_TOOL.name) {
+      const made = await runRelayExport(args);
+      return { content: [{ type: "text", text: made.text }], isError: made.isError };
+    }
     if (options.configPath !== undefined && isConfigureTool(req2.params.name)) {
       const changed = await runConfigure({ configPath: options.configPath, taintDir: store.directory }, req2.params.name, args);
       return { content: [{ type: "text", text: changed.text }], isError: changed.isError };
@@ -23210,9 +23394,17 @@ async function runSetup(options, args = {}) {
 }
 async function serveSetup(options) {
   const mcp = new Server({ name: SERVER_NAME, version: SERVER_VERSION }, { capabilities: { tools: {} }, instructions: SETUP_INSTRUCTIONS });
-  const tools = [SETUP_TOOL, ...CONFIGURE_TOOLS];
+  const tools = [SETUP_TOOL, RELAY_CHECK_TOOL, RELAY_EXPORT_TOOL, ...CONFIGURE_TOOLS];
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
   mcp.setRequestHandler(CallToolRequestSchema, async (req2) => {
+    if (req2.params.name === RELAY_CHECK_TOOL.name) {
+      const checked = await runRelayCheck(req2.params.arguments ?? {});
+      return { content: [{ type: "text", text: checked.text }], isError: checked.isError };
+    }
+    if (req2.params.name === RELAY_EXPORT_TOOL.name) {
+      const made = await runRelayExport(req2.params.arguments ?? {});
+      return { content: [{ type: "text", text: made.text }], isError: made.isError };
+    }
     if (isConfigureTool(req2.params.name)) {
       const changed = await runConfigure({ configPath: options.configPath }, req2.params.name, req2.params.arguments ?? {});
       return { content: [{ type: "text", text: changed.text }], isError: changed.isError };

@@ -32,6 +32,7 @@ import {
   type ToolSpec,
 } from './tools.js'
 import { CONFIGURE_TOOLS, isConfigureTool, runConfigure } from './configure.js'
+import { RELAY_CHECK_TOOL, RELAY_EXPORT_TOOL, runRelayCheck, runRelayExport } from './relay-setup.js'
 import { ClaudeAdapter, CAPABILITIES, INSTRUCTIONS } from './claude.js'
 import { hex } from './bundle.js'
 import { addTaint } from '../policy/taint.js'
@@ -125,7 +126,7 @@ export async function serve(options: ServeOptions): Promise<{ stop: () => Promis
   const push = delivery !== 'inbox'
   const inboxTool = delivery !== 'push'
 
-  const tools: ToolSpec[] = [SEND_TOOL, CHANNELS_TOOL, WHOAMI_TOOL]
+  const tools: ToolSpec[] = [SEND_TOOL, CHANNELS_TOOL, WHOAMI_TOOL, RELAY_CHECK_TOOL, RELAY_EXPORT_TOOL]
   if (inboxTool) tools.push(INBOX_TOOL)
   if (options.configPath !== undefined) tools.push(...CONFIGURE_TOOLS)
 
@@ -143,6 +144,14 @@ export async function serve(options: ServeOptions): Promise<{ stop: () => Promis
 
   mcp.setRequestHandler(CallToolRequestSchema, async req => {
     const args = (req.params.arguments ?? {}) as Record<string, unknown>
+    if (req.params.name === RELAY_CHECK_TOOL.name) {
+      const checked = await runRelayCheck(args)
+      return { content: [{ type: 'text', text: checked.text }], isError: checked.isError }
+    }
+    if (req.params.name === RELAY_EXPORT_TOOL.name) {
+      const made = await runRelayExport(args)
+      return { content: [{ type: 'text', text: made.text }], isError: made.isError }
+    }
     if (options.configPath !== undefined && isConfigureTool(req.params.name)) {
       const changed = await runConfigure(
         { configPath: options.configPath, taintDir: store.directory },

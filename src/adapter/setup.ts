@@ -21,6 +21,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { CONFIGURE_TOOLS, isConfigureTool, runConfigure } from './configure.js'
+import { RELAY_CHECK_TOOL, RELAY_EXPORT_TOOL, runRelayCheck, runRelayExport } from './relay-setup.js'
 import { init, whoami, newChannelSecret } from './onboard.js'
 import { SERVER_NAME, SERVER_VERSION } from './server.js'
 import type { ToolSpec } from './tools.js'
@@ -141,11 +142,19 @@ export async function serveSetup(options: SetupOptions): Promise<{ stop: () => P
   //
   // 오염 검사는 걸지 않는다. 저장소가 아직 없어 오염을 둘 자리가 없고,
   // 신원이 없으면 도착한 말도 없어 오염될 수단 자체가 없다 (§8.3).
-  const tools = [SETUP_TOOL, ...CONFIGURE_TOOLS]
+  const tools = [SETUP_TOOL, RELAY_CHECK_TOOL, RELAY_EXPORT_TOOL, ...CONFIGURE_TOOLS]
 
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
 
   mcp.setRequestHandler(CallToolRequestSchema, async req => {
+    if (req.params.name === RELAY_CHECK_TOOL.name) {
+      const checked = await runRelayCheck((req.params.arguments ?? {}) as Record<string, unknown>)
+      return { content: [{ type: 'text', text: checked.text }], isError: checked.isError }
+    }
+    if (req.params.name === RELAY_EXPORT_TOOL.name) {
+      const made = await runRelayExport((req.params.arguments ?? {}) as Record<string, unknown>)
+      return { content: [{ type: 'text', text: made.text }], isError: made.isError }
+    }
     if (isConfigureTool(req.params.name)) {
       const changed = await runConfigure(
         { configPath: options.configPath },

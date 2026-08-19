@@ -14,11 +14,13 @@ import {
   pluginHooks,
   runnerCommand,
   buildBundle,
+  buildRelay,
   CLAUDE_MANIFEST,
   CODEX_MANIFEST,
   MARKETPLACE_MANIFEST,
   PLUGIN_HOOKS,
   PLUGIN_BUNDLE,
+  PLUGIN_RELAY,
   PLUGIN_DIR,
   PLUGIN_SKILLS,
   PLUGIN_SKILL_FILES,
@@ -30,6 +32,13 @@ import { HOOK_EVENTS } from '../src/install/hooks.js'
 import { SEND_TOOL, CHANNELS_TOOL, INBOX_TOOL, WHOAMI_TOOL } from '../src/adapter/tools.js'
 import { SETUP_TOOL } from '../src/adapter/setup.js'
 import { CONFIGURE_TOOLS } from '../src/adapter/configure.js'
+import {
+  RELAY_CHECK_TOOL,
+  RELAY_EXPORT_TOOL,
+  VERCEL_JSON,
+  LOCAL_HOST,
+  LOCAL_PORT,
+} from '../src/adapter/relay-setup.js'
 import { DEFAULT_CONFIG_PATH } from '../src/adapter/config.js'
 import { GRANTS, DEFAULT_PEER_GRANT } from '../src/policy/authority.js'
 import { MARK_NEW, MARK_SELF, MARK_MUTE, markPeer } from '../src/adapter/bundle.js'
@@ -76,6 +85,22 @@ describe('커밋된 산출물 = 생성 결과', () => {
     await buildBundle()
     const after = await Bun.file(PLUGIN_BUNDLE).bytes()
     expect(Buffer.from(after).equals(Buffer.from(before))).toBe(true)
+  })
+
+  test(`${PLUGIN_RELAY} 가 지금 소스에서 나온 것과 같다`, async () => {
+    // 릴레이도 같은 이유로 커밋된 번들이 곧 실행물이다 — 로컬로 띄우는 것도,
+    // `relay_export` 가 배포 디렉토리에 복사해 넣는 것도 이 파일 하나다.
+    const before = await Bun.file(PLUGIN_RELAY).bytes()
+    await buildRelay()
+    const after = await Bun.file(PLUGIN_RELAY).bytes()
+    expect(Buffer.from(after).equals(Buffer.from(before))).toBe(true)
+  })
+
+  test('내보내는 vercel.json 이 이 레포가 배포하는 것과 같다', async () => {
+    // 이 레포의 릴레이는 실제로 돌고 있는 배포다. 내보낸 쪽만 다른 설정으로
+    // 뜨면 "여기서는 되는데 거기서는 안 되는" 릴레이가 생기고, 그 차이는
+    // 배포가 끝난 뒤에야 드러난다.
+    expect(await committed('vercel.json')).toEqual(VERCEL_JSON)
   })
 })
 
@@ -291,7 +316,15 @@ describe('셋업 스킬', () => {
   test('부르라고 적어 둔 툴이 전부 실제로 있다', () => {
     // 툴 이름을 코드에서 바꾸면 스킬은 없는 툴을 부르라고 시킨다. 모델은
     // 그것을 오류가 아니라 "권한이 없나 보다" 로 읽고 다른 길을 찾아 헤맨다.
-    for (const t of [SETUP_TOOL, SEND_TOOL, CHANNELS_TOOL, INBOX_TOOL, WHOAMI_TOOL]) {
+    for (const t of [
+      SETUP_TOOL,
+      RELAY_CHECK_TOOL,
+      RELAY_EXPORT_TOOL,
+      SEND_TOOL,
+      CHANNELS_TOOL,
+      INBOX_TOOL,
+      WHOAMI_TOOL,
+    ]) {
       expect(skill).toContain(`\`${t.name}\``)
     }
     for (const t of CONFIGURE_TOOLS) expect(skill).toContain(`\`${t.name}\``)
@@ -299,6 +332,12 @@ describe('셋업 스킬', () => {
 
   test('설정 경로가 코드와 같다', () => {
     expect(skill).toContain(DEFAULT_CONFIG_PATH)
+  })
+
+  test('로컬 릴레이 주소가 코드와 같다', () => {
+    // 스킬이 적어 둔 주소를 사용자가 그대로 설정에 넣는다. 코드가 듣는
+    // 자리와 갈리면 설정은 멀쩡히 만들어지고 아무것도 오가지 않는다.
+    expect(skill).toContain(`http://${LOCAL_HOST}:${String(LOCAL_PORT)}`)
   })
 
   test('권한 등급이 코드와 같다', () => {

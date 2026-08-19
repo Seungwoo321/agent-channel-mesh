@@ -64,8 +64,11 @@ export const PLUGIN_SKILL_FILES: readonly string[] = [SETUP_SKILL, USAGE_SKILL]
 /** 두 에이전트가 **같이** 읽는 목록. Codex 도 `.codex-plugin/` 이 아니라 여기를 본다. */
 export const MARKETPLACE_MANIFEST = '.claude-plugin/marketplace.json'
 
-/** 번들 진입점 — 이 파일 하나를 묶어 `PLUGIN_BUNDLE` 로 낸다. */
+/** 어댑터 번들 진입점 — 이 파일 하나를 묶어 `PLUGIN_BUNDLE` 로 낸다. */
 export const BUNDLE_ENTRY = 'src/adapter/bin.ts'
+
+/** 릴레이 번들 진입점. 어댑터와 **같은 이유로** 묶는다 ({@link PLUGIN_RELAY}). */
+export const RELAY_ENTRY = 'src/server.ts'
 
 /**
  * 플러그인이 실제로 실행하는 파일. 의존성이 안에 들어간 단일 파일이다.
@@ -79,6 +82,21 @@ export const BUNDLE_ENTRY = 'src/adapter/bin.ts'
  * 설치 쪽에 없다. 번들이면 클론한 것이 곧 도는 것이라 핀이 하나다.
  */
 export const PLUGIN_BUNDLE = `${PLUGIN_DIR}/dist/acm.js`
+
+/**
+ * 릴레이도 플러그인 안에서 돈다.
+ *
+ * 로컬 릴레이는 **한 기계 안의 내 에이전트들**(클로드 ↔ 코덱스)이 만나는
+ * 자리다. 그것을 쓰려고 사용자가 레포를 따로 클론하게 하지 않는다 — 플러그인을
+ * 깔았다는 것이 곧 릴레이를 가졌다는 뜻이어야 한다.
+ *
+ * 마켓플레이스가 받아 둔 `src/server.ts` 를 그대로 부르지 않는 이유는 둘이다.
+ * 그 클론에는 `node_modules` 가 없어 릴레이 그래프의 `@noble/hashes` 에서
+ * 죽고, Claude 가 실제로 실행하는 자리는 클론이 아니라 `plugin/` 만 복사해 둔
+ * 캐시라 두 에이전트가 서로 다른 경로를 타게 된다. 번들이면 양쪽 다 자기
+ * 플러그인 루트 안의 같은 파일을 돌린다.
+ */
+export const PLUGIN_RELAY = `${PLUGIN_DIR}/dist/relay.js`
 
 /** 플러그인 루트 안에서의 번들 위치. 두 에이전트가 서로 다른 방법으로 여기에 닿는다. */
 const BUNDLE_REL = 'dist/acm.js'
@@ -274,20 +292,30 @@ export function marketplaceManifest(version: string): unknown {
  * 출력이 결정적이라 커밋된 번들과 여기서 나온 것이 바이트 단위로 같아야
  * 한다. 그 대조는 테스트가 한다.
  */
-export async function buildBundle(): Promise<void> {
-  const out = await Bun.build({
-    entrypoints: [BUNDLE_ENTRY],
+async function bundle(entry: string, out: string): Promise<void> {
+  const built = await Bun.build({
+    entrypoints: [entry],
     target: 'bun',
     format: 'esm',
     minify: false,
     sourcemap: 'none',
   })
-  if (!out.success) throw new AggregateError(out.logs, '번들 빌드 실패')
-  const [artifact] = out.outputs
-  if (artifact === undefined || out.outputs.length !== 1) {
-    throw new Error(`번들이 파일 하나로 안 나왔다: ${out.outputs.length}개`)
+  if (!built.success) throw new AggregateError(built.logs, `번들 빌드 실패: ${entry}`)
+  const [artifact] = built.outputs
+  if (artifact === undefined || built.outputs.length !== 1) {
+    throw new Error(`번들이 파일 하나로 안 나왔다: ${built.outputs.length}개`)
   }
-  await Bun.write(PLUGIN_BUNDLE, artifact)
+  await Bun.write(out, artifact)
+}
+
+/** 어댑터 번들. 플러그인이 MCP 서버와 훅으로 돌리는 파일이다. */
+export async function buildBundle(): Promise<void> {
+  await bundle(BUNDLE_ENTRY, PLUGIN_BUNDLE)
+}
+
+/** 릴레이 번들. `relay_check` 가 내는 명령이 가리키는 파일이다. */
+export async function buildRelay(): Promise<void> {
+  await bundle(RELAY_ENTRY, PLUGIN_RELAY)
 }
 
 if (import.meta.main) {
@@ -302,4 +330,6 @@ if (import.meta.main) {
   await write(PLUGIN_HOOKS, pluginHooks())
   await buildBundle()
   process.stdout.write(`썼다: ${PLUGIN_BUNDLE}\n`)
+  await buildRelay()
+  process.stdout.write(`썼다: ${PLUGIN_RELAY}\n`)
 }

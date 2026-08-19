@@ -30,6 +30,7 @@ import { parseArgs } from '../src/adapter/bin.js'
 import { callTool } from '../src/adapter/tools.js'
 import { BUNDLE_HEAD } from '../src/adapter/bundle.js'
 import { CONFIGURE_TOOLS } from '../src/adapter/configure.js'
+import { RELAY_CHECK_TOOL, RELAY_EXPORT_TOOL } from '../src/adapter/relay-setup.js'
 import { Adapter } from './support/adapter.js'
 
 /** 합류 창. 실제 타이머를 태운다 — 창을 안 태우면 SCN-5 를 확인한 것이 아니다. */
@@ -546,7 +547,12 @@ async function fixture(store?: Record<string, unknown>): Promise<Fixture> {
 
 /** 설정 파일을 아는 어댑터가 내는 툴 이름 전부. 정렬은 `tools/list` 비교용이다. */
 function withConfigure(names: readonly string[]): string[] {
-  return [...names, ...CONFIGURE_TOOLS.map(t => t.name)].sort()
+  return [
+    ...names,
+    RELAY_CHECK_TOOL.name,
+    RELAY_EXPORT_TOOL.name,
+    ...CONFIGURE_TOOLS.map(t => t.name),
+  ].sort()
 }
 
 describe('bin.ts 를 서브프로세스로 띄운다', () => {
