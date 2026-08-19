@@ -178,6 +178,10 @@ export async function main(argv: readonly string[]): Promise<{ stop: () => Promi
   return await serve({
     node,
     delivery: args.delivery!,
+    // 설정을 고치는 툴이 고칠 파일 (§11). 여기서 넘기는 값은 방금 읽은 그
+    // 경로여야 한다 — `--config` 로 다른 파일을 가리킨 세션이 기본 경로를
+    // 고치면, 고쳤다는 보고와 실제로 도는 설정이 어긋난다.
+    configPath: args.config,
     // 저장소를 **여기서** 세운다. `serve` 가 생략을 기본값으로 메워 주므로
     // 안 넘겨도 서버는 뜨지만, 그러면 설정 파일의 `store.*` 는 검증만 되고
     // 아무 효과가 없다 — 사용자는 보관 기한을 줄였다고 믿는데 30일 기본값이

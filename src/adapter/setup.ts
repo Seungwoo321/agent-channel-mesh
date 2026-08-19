@@ -20,6 +20,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { CONFIGURE_TOOLS, isConfigureTool, runConfigure } from './configure.js'
 import { init, whoami, newChannelSecret } from './onboard.js'
 import { SERVER_NAME, SERVER_VERSION } from './server.js'
 import type { ToolSpec } from './tools.js'
@@ -134,9 +135,25 @@ export async function serveSetup(options: SetupOptions): Promise<{ stop: () => P
     { capabilities: { tools: {} }, instructions: SETUP_INSTRUCTIONS },
   )
 
-  mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [SETUP_TOOL] }))
+  // 설정을 고치는 툴도 함께 낸다. 신원을 만든 **직후에** 하는 일이 채널
+  // 합류이고, 그것을 다음 세션으로 미루면 사람이 한 번 더 왕복해야 한다 —
+  // 여기서 채널까지 넣고 나서 한 번만 다시 열면 된다.
+  //
+  // 오염 검사는 걸지 않는다. 저장소가 아직 없어 오염을 둘 자리가 없고,
+  // 신원이 없으면 도착한 말도 없어 오염될 수단 자체가 없다 (§8.3).
+  const tools = [SETUP_TOOL, ...CONFIGURE_TOOLS]
+
+  mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
 
   mcp.setRequestHandler(CallToolRequestSchema, async req => {
+    if (isConfigureTool(req.params.name)) {
+      const changed = await runConfigure(
+        { configPath: options.configPath },
+        req.params.name,
+        (req.params.arguments ?? {}) as Record<string, unknown>,
+      )
+      return { content: [{ type: 'text', text: changed.text }], isError: changed.isError }
+    }
     if (req.params.name !== SETUP_TOOL.name) {
       return {
         content: [{ type: 'text', text: `모르는 툴: ${req.params.name}` }],

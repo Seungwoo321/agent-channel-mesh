@@ -29,9 +29,8 @@ import { serve, DEFAULT_COALESCE_MS, type Delivery } from '../src/adapter/server
 import { parseArgs } from '../src/adapter/bin.js'
 import { callTool } from '../src/adapter/tools.js'
 import { BUNDLE_HEAD } from '../src/adapter/bundle.js'
-
-const REPO = join(import.meta.dir, '..')
-const BIN = join(REPO, 'src/adapter/bin.ts')
+import { CONFIGURE_TOOLS } from '../src/adapter/configure.js'
+import { Adapter } from './support/adapter.js'
 
 /** 합류 창. 실제 타이머를 태운다 — 창을 안 태우면 SCN-5 를 확인한 것이 아니다. */
 const COALESCE_MS = 500
@@ -493,97 +492,6 @@ describe('both 로 띄운 서버', () => {
  * SCN-2 · SCN-9 — bin.ts 를 실제로 띄워 MCP 로 말을 건다
  * ------------------------------------------------------------------ */
 
-interface Rpc {
-  readonly id?: number
-  readonly method?: string
-  readonly result?: Record<string, unknown>
-  readonly error?: { readonly message: string }
-}
-
-/** 서브프로세스로 띄운 어댑터. 배선을 보려면 `main()` 을 실제로 통과해야 한다. */
-class Adapter {
-  private nextId = 1
-  private readonly buffered: Rpc[] = []
-  private pending = ''
-  private readonly chunks: AsyncIterator<Uint8Array>
-  private readonly decoder = new TextDecoder()
-
-  private constructor(private readonly proc: Bun.Subprocess<'pipe', 'pipe', 'pipe'>) {
-    this.chunks = proc.stdout[Symbol.asyncIterator]() as AsyncIterator<Uint8Array>
-  }
-
-  static async start(args: readonly string[], home: string): Promise<Adapter> {
-    const proc = Bun.spawn(['bun', BIN, ...args], {
-      cwd: REPO,
-      stdin: 'pipe',
-      stdout: 'pipe',
-      stderr: 'pipe',
-      env: { ...process.env, HOME: home, ACM_CONFIG: undefined, ACM_DELIVERY: undefined },
-    })
-    const adapter = new Adapter(proc as Bun.Subprocess<'pipe', 'pipe', 'pipe'>)
-    const init = await adapter.request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'acceptance', version: '0' },
-    })
-    adapter.notify('notifications/initialized')
-    adapter.initializeResult = init
-    return adapter
-  }
-
-  initializeResult: Record<string, unknown> = {}
-
-  async request(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-    const id = this.nextId++
-    this.write({ jsonrpc: '2.0', id, method, params })
-    const res = await this.readUntil(m => m.id === id)
-    if (res.error) throw new Error(`${method} 실패: ${res.error.message}`)
-    return res.result ?? {}
-  }
-
-  notify(method: string, params: Record<string, unknown> = {}): void {
-    this.write({ jsonrpc: '2.0', method, params })
-  }
-
-  /** 툴 호출 결과의 평문. MCP `content` 껍질을 벗긴다. */
-  async call(name: string, args: Record<string, unknown> = {}): Promise<string> {
-    const res = await this.request('tools/call', { name, arguments: args })
-    const content = res.content as { type: string; text: string }[]
-    return content.map(c => c.text).join('\n')
-  }
-
-  private write(message: Record<string, unknown>): void {
-    this.proc.stdin.write(JSON.stringify(message) + '\n')
-    this.proc.stdin.flush()
-  }
-
-  private async readUntil(match: (m: Rpc) => boolean, timeoutMs = 15_000): Promise<Rpc> {
-    const deadline = Date.now() + timeoutMs
-    for (;;) {
-      const found = this.buffered.findIndex(match)
-      if (found >= 0) return this.buffered.splice(found, 1)[0]!
-      if (Date.now() > deadline) throw new Error('어댑터가 응답하지 않았다')
-      const chunk = await Promise.race([
-        this.chunks.next(),
-        sleep(timeoutMs).then(() => ({ done: true, value: undefined }) as const),
-      ])
-      if (chunk.done || chunk.value === undefined) throw new Error('어댑터가 stdout 을 닫았다')
-      this.pending += this.decoder.decode(chunk.value, { stream: true })
-      let nl: number
-      while ((nl = this.pending.indexOf('\n')) >= 0) {
-        const line = this.pending.slice(0, nl).trim()
-        this.pending = this.pending.slice(nl + 1)
-        if (line) this.buffered.push(JSON.parse(line) as Rpc)
-      }
-    }
-  }
-
-  async stop(): Promise<void> {
-    this.proc.kill()
-    await this.proc.exited
-  }
-}
-
 /** hex. 저장 파일 이름이 채널 태그 hex 라서 테스트도 같은 값을 계산한다. */
 function hex(bytes: Uint8Array): string {
   return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
@@ -636,6 +544,11 @@ async function fixture(store?: Record<string, unknown>): Promise<Fixture> {
   }
 }
 
+/** 설정 파일을 아는 어댑터가 내는 툴 이름 전부. 정렬은 `tools/list` 비교용이다. */
+function withConfigure(names: readonly string[]): string[] {
+  return [...names, ...CONFIGURE_TOOLS.map(t => t.name)].sort()
+}
+
 describe('bin.ts 를 서브프로세스로 띄운다', () => {
   let homes: string[] = []
   let running: Adapter[] = []
@@ -664,25 +577,21 @@ describe('bin.ts 를 서브프로세스로 띄운다', () => {
     const capabilities = adapter.initializeResult.capabilities as Record<string, unknown>
     expect(capabilities.experimental).toHaveProperty('claude/channel')
 
-    const listed = await adapter.request('tools/list')
-    const names = (listed.tools as { name: string }[]).map(t => t.name).sort()
+    const names = await adapter.toolNames()
     // whoami 는 전달 방식과 무관하다 — 공개키 교환은 셋 다 필요하다(§11.1).
-    expect(names).toEqual(['channels', 'inbox', 'send', 'whoami'])
+    // 설정 툴은 `--config` 로 고칠 파일을 아는 한 전달 방식과 무관하게 실린다.
+    expect(names).toEqual(withConfigure(['channels', 'inbox', 'send', 'whoami']))
   }, 30_000)
 
   test('SCN-2 · push 는 inbox 를 싣지 않고, inbox 는 capability 를 선언하지 않는다', async () => {
     const pushed = await boot('push')
-    const pushNames = ((await pushed.adapter.request('tools/list')).tools as { name: string }[])
-      .map(t => t.name)
-      .sort()
-    expect(pushNames).toEqual(['channels', 'send', 'whoami'])
+    const pushNames = await pushed.adapter.toolNames()
+    expect(pushNames).toEqual(withConfigure(['channels', 'send', 'whoami']))
     expect(pushed.adapter.initializeResult.capabilities).toHaveProperty('experimental')
 
     const polled = await boot('inbox')
-    const inboxNames = ((await polled.adapter.request('tools/list')).tools as { name: string }[])
-      .map(t => t.name)
-      .sort()
-    expect(inboxNames).toEqual(['channels', 'inbox', 'send', 'whoami'])
+    const inboxNames = await polled.adapter.toolNames()
+    expect(inboxNames).toEqual(withConfigure(['channels', 'inbox', 'send', 'whoami']))
     // 못 하는 것을 선언하면 호스트가 할 수 있다고 믿는다.
     expect(polled.adapter.initializeResult.capabilities).not.toHaveProperty('experimental')
   }, 30_000)

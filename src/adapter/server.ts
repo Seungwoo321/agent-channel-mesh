@@ -31,6 +31,7 @@ import {
   WHOAMI_TOOL,
   type ToolSpec,
 } from './tools.js'
+import { CONFIGURE_TOOLS, isConfigureTool, runConfigure } from './configure.js'
 import { ClaudeAdapter, CAPABILITIES, INSTRUCTIONS } from './claude.js'
 import { hex } from './bundle.js'
 import { addTaint } from '../policy/taint.js'
@@ -81,6 +82,13 @@ export interface ServeOptions {
    * 경로에 서고, 한 기계의 두 신원이 같은 채널 파일을 공유한다.
    */
   readonly store: MessageStore
+  /**
+   * 설정 파일 경로. 주면 설정을 고치는 툴이 함께 뜬다 (§11).
+   *
+   * 없으면 그 툴들이 아예 없다 — 어느 파일을 고칠지 모르는 채로 짐작해서
+   * 열면 사용자가 쓰는 설정이 아닌 파일을 고치고, 고쳤다고 보고한다.
+   */
+  readonly configPath?: string
   /** 주입 합류 시간(ms). `push` 가 없으면 쓰이지 않는다. */
   readonly coalesceMs?: number
   /** 모델에게 줄 지시. 생략하면 전달 방식에 맞는 기본 문구. */
@@ -119,6 +127,7 @@ export async function serve(options: ServeOptions): Promise<{ stop: () => Promis
 
   const tools: ToolSpec[] = [SEND_TOOL, CHANNELS_TOOL, WHOAMI_TOOL]
   if (inboxTool) tools.push(INBOX_TOOL)
+  if (options.configPath !== undefined) tools.push(...CONFIGURE_TOOLS)
 
   const mcp = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
@@ -133,10 +142,20 @@ export async function serve(options: ServeOptions): Promise<{ stop: () => Promis
   mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
 
   mcp.setRequestHandler(CallToolRequestSchema, async req => {
+    const args = (req.params.arguments ?? {}) as Record<string, unknown>
+    if (options.configPath !== undefined && isConfigureTool(req.params.name)) {
+      const changed = await runConfigure(
+        { configPath: options.configPath, taintDir: store.directory },
+        req.params.name,
+        args,
+      )
+      return { content: [{ type: 'text', text: changed.text }], isError: changed.isError }
+    }
+
     const result = await callTool(
       { node, store, hasInbox: inboxTool },
       req.params.name,
-      (req.params.arguments ?? {}) as Record<string, unknown>,
+      args,
     )
     return { content: [{ type: 'text', text: result.text }], isError: result.isError }
   })

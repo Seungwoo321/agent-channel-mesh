@@ -18,15 +18,19 @@ export const DEFAULT_MAX_HOPS = 8
 /** 채널당 메시지 예산. 소진하면 정지한다. */
 export const DEFAULT_MESSAGE_BUDGET = 100
 
-export type SilenceReason =
-  /** 나를 부르지 않았다 — 읽되 응답하지 않는다. */
-  | 'not-mentioned'
-  /** 내가 유발한 메시지다 — 자동 응답하면 자기와 대화한다. */
-  | 'echo'
-  /** 홉 상한 초과 — 사슬이 너무 길다. */
-  | 'hop-limit'
-  /** 예산 소진. */
-  | 'budget'
+/**
+ * 응답하지 않는 이유 전부. 이 값이 그대로 저장소의 `mute` 로 남고
+ * 렌더에 실려 모델에게 보이므로, `mesh-usage` 스킬이 넷을 다 설명해야 한다
+ * (`test/plugin.test.ts` 가 대조).
+ *
+ * - `not-mentioned` 나를 부르지 않았다 — 읽되 응답하지 않는다
+ * - `echo` 내가 유발한 메시지다 — 자동 응답하면 자기와 대화한다
+ * - `hop-limit` 사슬이 너무 길다
+ * - `budget` 예산 소진
+ */
+export const SILENCE_REASONS = ['not-mentioned', 'echo', 'hop-limit', 'budget'] as const
+
+export type SilenceReason = (typeof SILENCE_REASONS)[number]
 
 export type Decision =
   | { readonly speak: true; readonly hops: number }

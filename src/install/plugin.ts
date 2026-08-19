@@ -50,6 +50,16 @@ export const PLUGIN_HOOKS = `${PLUGIN_DIR}/hooks/hooks.json`
  */
 export const PLUGIN_SKILLS = `${PLUGIN_DIR}/skills`
 export const SETUP_SKILL = `${PLUGIN_SKILLS}/mesh-setup/SKILL.md`
+export const USAGE_SKILL = `${PLUGIN_SKILLS}/mesh-usage/SKILL.md`
+
+/**
+ * 실려야 하는 스킬 전부.
+ *
+ * 둘로 나눈 것은 읽는 시점이 다르기 때문이다 — 셋업은 한 번 붙일 때, 사용법은
+ * 붙은 뒤 매번이다. 한 파일에 합치면 매번 읽는 쪽이 다시 볼 일 없는 절차를
+ * 함께 지고 가고, 모델이 설정 절차를 사용 중에 다시 밟는다.
+ */
+export const PLUGIN_SKILL_FILES: readonly string[] = [SETUP_SKILL, USAGE_SKILL]
 
 /** 두 에이전트가 **같이** 읽는 목록. Codex 도 `.codex-plugin/` 이 아니라 여기를 본다. */
 export const MARKETPLACE_MANIFEST = '.claude-plugin/marketplace.json'

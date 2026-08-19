@@ -21,6 +21,7 @@
  * 없다. 모델에게 도달하는 형태 자체가 이미 시간순 묶음이어야 한다.
  */
 import type { StoredMessage } from '../store/store.js'
+import type { Grant } from '../policy/authority.js'
 import { DEFAULT_PEER_GRANT, recordAuthority, recordGrant } from '../policy/authority.js'
 
 /**
@@ -30,6 +31,22 @@ import { DEFAULT_PEER_GRANT, recordAuthority, recordGrant } from '../policy/auth
  * 붙였는지를 밖에서 확인할 수 있어야 "구조적 강제"라는 말이 검증 가능해진다.
  */
 export const BUNDLE_HEAD = '먼저 전체를 읽고 현재 상태를 보고한다. 개별 메시지에 즉답하지 않는다.'
+
+/**
+ * 한 건에 붙는 표시.
+ *
+ * 상수로 두는 이유는 {@link BUNDLE_HEAD} 와 같다 — 이 문구가 곧 `mesh-usage`
+ * 스킬이 모델에게 뜻을 알려 주는 어휘이고, 여기서 바꾸면 스킬이 없는 표시를
+ * 설명하게 된다. 어긋남은 `test/plugin.test.ts` 가 잡는다.
+ */
+export const MARK_NEW = '[새 메시지]'
+export const MARK_SELF = '[내 에이전트]'
+export const MARK_MUTE = '응답 안 함'
+
+/** 동료가 공유한 말의 표시. 기본 권한이면 등급을 적지 않는다. */
+export function markPeer(grant: Grant): string {
+  return grant === DEFAULT_PEER_GRANT ? '[동료 공유]' : `[동료 공유 · 허용 ${grant}]`
+}
 
 export interface BundleOptions {
   /** 머리 지시를 붙일지. 생략하면 메시지가 2건 이상일 때 붙는다 (§6.1). */
@@ -129,8 +146,8 @@ function renderOne(m: StoredMessage, markNew: boolean): string {
   const when = `보낸 ${iso(m.sentAt)} · 저장 ${iso(m.storedAt)}`
   // 발화 판정을 함께 보여준다 — 메시지는 판정과 무관하게 전달되고(§7
   // 「읽되 응답하지 않는다」), 응답 여부는 모델이 이걸 보고 정한다.
-  const mute = m.mute === undefined ? '' : ` [응답 안 함: ${m.mute}]`
-  const fresh = markNew && !m.delivered ? ' [새 메시지]' : ''
+  const mute = m.mute === undefined ? '' : ` [${MARK_MUTE}: ${m.mute}]`
+  const fresh = markNew && !m.delivered ? ` ${MARK_NEW}` : ''
   return `<${senderOf(m)}@${m.channelId} · ${when}>${authorityOf(m)}${mute}${fresh}\n${m.text}`
 }
 
@@ -146,9 +163,8 @@ function renderOne(m: StoredMessage, markNew: boolean): string {
  * 주입하면 압축될 때 사라지므로(§6.1) 표시에 기대지 않는다.
  */
 function authorityOf(m: StoredMessage): string {
-  if (recordAuthority(m) === 'self') return ' [내 에이전트]'
-  const grant = recordGrant(m)
-  return grant === DEFAULT_PEER_GRANT ? ' [동료 공유]' : ` [동료 공유 · 허용 ${grant}]`
+  if (recordAuthority(m) === 'self') return ` ${MARK_SELF}`
+  return ` ${markPeer(recordGrant(m))}`
 }
 
 /** 절대 시각만 쓴다 (§6.1). 상대 시각은 며칠 밀린 묶음에서 오독을 부른다. */

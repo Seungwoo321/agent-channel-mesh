@@ -7,10 +7,13 @@
  */
 import { test, expect, describe, afterEach } from 'bun:test'
 import { mkdtemp, rm, readFile, stat } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { runSetup, SETUP_TOOL, SETUP_INSTRUCTIONS } from '../src/adapter/setup.js'
+import { CONFIGURE_TOOLS } from '../src/adapter/configure.js'
 import { SETUP_HINT } from '../src/install/notify.js'
+import { Adapter } from './support/adapter.js'
 
 const dirs: string[] = []
 
@@ -136,4 +139,80 @@ describe('설정 없는 훅 — 실제로 돌려 본다', () => {
       suppressOutput: true,
     })
   }, 20_000)
+})
+
+/* ------------------------------------------------------------------ *
+ * 설정 없는 첫 실행 — bin.ts 를 실제로 띄워 MCP 로 말을 건다
+ * ------------------------------------------------------------------ */
+
+describe('설정 없는 서버 — 실제로 띄워 본다', () => {
+  const running: Adapter[] = []
+
+  async function boot(): Promise<{ adapter: Adapter; config: string }> {
+    const home = await mkdtemp(join(tmpdir(), 'acm-setup-home-'))
+    dirs.push(home)
+    const config = join(home, '.agent-channel-mesh', 'config.json')
+    const adapter = await Adapter.start(['--delivery', 'inbox', '--config', config], home)
+    running.push(adapter)
+    return { adapter, config }
+  }
+
+  afterEach(async () => {
+    for (const a of running.splice(0)) await a.stop()
+  })
+
+  test('setup 과 설정 툴을 함께 낸다', async () => {
+    // 깐 직후에 하는 일은 신원 만들기 **하나가 아니라** 신원 + 채널 합류다.
+    // 설정 툴이 여기 없으면 사람이 세션을 한 번 더 여닫아야 한다.
+    const { adapter } = await boot()
+
+    expect(await adapter.toolNames()).toEqual(
+      [SETUP_TOOL.name, ...CONFIGURE_TOOLS.map(t => t.name)].sort(),
+    )
+    // 메시 툴은 없다 — 신원이 없으니 보낼 수도 읽을 수도 없다.
+    expect(await adapter.toolNames()).not.toContain('send')
+  }, 30_000)
+
+  test('설정이 없다고 말한다', async () => {
+    // 조용히 죽으면 깐 사람 쪽에서는 툴이 아예 없는 것으로만 보인다.
+    const { adapter } = await boot()
+    expect(adapter.initializeResult.instructions).toBe(SETUP_INSTRUCTIONS)
+  }, 30_000)
+
+  test('한 세션 안에서 setup 다음에 channel_join 까지 간다', async () => {
+    const { adapter, config } = await boot()
+
+    const made = await adapter.call('setup', { relay: 'https://relay.example', label: 'me' })
+    expect(made).toContain('설정을 만들었다')
+
+    const joined = await adapter.callResult('channel_join', {
+      name: 'team',
+      secret: 'aa'.repeat(32),
+      axis: 'external',
+      members: [{ label: 'alice', sign: '01'.repeat(32), kem: '02'.repeat(32) }],
+    })
+    expect(joined.isError).toBe(false)
+
+    const saved = JSON.parse(await readFile(config, 'utf8')) as {
+      channels: { name: string; members: { label: string }[] }[]
+    }
+    expect(saved.channels.map(c => c.name)).toEqual(['team'])
+    expect(saved.channels[0]?.members.map(m => m.label)).toEqual(['alice'])
+    expect((await stat(config)).mode & 0o777).toBe(0o600)
+  }, 30_000)
+
+  test('설정을 만들기 전 설정 툴은 거부한다', async () => {
+    // 고칠 파일이 아직 없다. 여기서 새 파일을 만들면 시드 없는 설정이 생겨
+    // 다음 실행이 설정 모드로도, 메시 모드로도 뜨지 못한다.
+    const { adapter, config } = await boot()
+
+    const joined = await adapter.callResult('channel_join', {
+      name: 'team',
+      secret: 'aa'.repeat(32),
+      axis: 'external',
+      members: [],
+    })
+    expect(joined.isError).toBe(true)
+    expect(existsSync(config)).toBe(false)
+  }, 30_000)
 })

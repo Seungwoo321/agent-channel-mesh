@@ -21,18 +21,29 @@ import {
   PLUGIN_BUNDLE,
   PLUGIN_DIR,
   PLUGIN_SKILLS,
+  PLUGIN_SKILL_FILES,
   SETUP_SKILL,
+  USAGE_SKILL,
   PACKAGE_NAME,
 } from '../src/install/plugin.js'
 import { HOOK_EVENTS } from '../src/install/hooks.js'
 import { SEND_TOOL, CHANNELS_TOOL, INBOX_TOOL, WHOAMI_TOOL } from '../src/adapter/tools.js'
 import { SETUP_TOOL } from '../src/adapter/setup.js'
+import { CONFIGURE_TOOLS } from '../src/adapter/configure.js'
 import { DEFAULT_CONFIG_PATH } from '../src/adapter/config.js'
 import { GRANTS, DEFAULT_PEER_GRANT } from '../src/policy/authority.js'
+import { MARK_NEW, MARK_SELF, MARK_MUTE, markPeer } from '../src/adapter/bundle.js'
+import { SILENCE_REASONS } from '../src/channel/speech.js'
 
 const pkg = (await Bun.file('package.json').json()) as { version: string; name: string }
 const version = pkg.version
-const skill = await Bun.file(SETUP_SKILL).text()
+const skills = new Map<string, string>(
+  await Promise.all(
+    PLUGIN_SKILL_FILES.map(async p => [p, await Bun.file(p).text()] as [string, string]),
+  ),
+)
+const skill = skills.get(SETUP_SKILL)!
+const usage = skills.get(USAGE_SKILL)!
 
 async function committed(path: string): Promise<unknown> {
   return await Bun.file(path).json()
@@ -216,57 +227,74 @@ describe('MCP 서버 — 번들에 닿는 길이 에이전트마다 다르다', 
   })
 })
 
-describe('셋업 스킬', () => {
+describe('스킬', () => {
   // 스킬 본문은 산문이라 생성기가 만들지 않는다(`src/install/plugin.ts` 참조).
   // 그래서 생성-대조가 못 지키는 두 자리를 여기서 지킨다 — 두 에이전트의
-  // 로더가 요구하는 프론트매터 형식, 그리고 본문이 적어 둔 이름·경로가 코드와
-  // 같은지.
-  const front = (): Record<string, unknown> => {
-    const end = skill.indexOf('\n---', 4)
-    return Bun.YAML.parse(skill.slice(4, end)) as Record<string, unknown>
+  // 로더가 요구하는 프론트매터 형식, 그리고 본문이 적어 둔 이름·경로·표시가
+  // 코드와 같은지.
+  const front = (text: string): Record<string, unknown> => {
+    const end = text.indexOf('\n---', 4)
+    return Bun.YAML.parse(text.slice(4, end)) as Record<string, unknown>
   }
 
-  test('두 로더가 집는 자리에 있다', async () => {
+  test('두 로더가 집는 자리에 있다', () => {
     // 경로가 어긋나면 오류가 아니라 침묵이다 — 스킬만 목록에서 사라진다.
     expect(PLUGIN_SKILLS).toBe(`${PLUGIN_DIR}/skills`)
-    expect(await Bun.file(SETUP_SKILL).exists()).toBe(true)
-  })
-
-  test('프론트매터가 열리고 닫힌다', () => {
-    // Codex 의 플러그인 검증기는 여는 구분자로 시작하지 않거나 닫히지 않은
-    // SKILL.md 를 등록 자체에서 뺀다.
-    expect(skill.startsWith('---\n')).toBe(true)
-    expect(skill.indexOf('\n---', 4)).toBeGreaterThan(0)
-  })
-
-  test('이름과 설명이 비어 있지 않다', () => {
-    // 둘 중 하나라도 비면 Codex 가 스킬을 거부한다. 설명은 모델이 이 스킬을
-    // 부를지 정하는 유일한 근거이기도 하다.
-    const f = front()
-    expect(f['name']).toBe('mesh-setup')
-    expect((f['description'] as string).length).toBeGreaterThan(40)
-  })
-
-  test('디렉토리 이름이 선언한 이름과 같다', () => {
-    // Claude 는 디렉토리 이름으로, Codex 는 프론트매터로 부른다. 갈리면 한쪽
-    // 에이전트에서만 안 뜬다.
-    expect(SETUP_SKILL).toContain(`/${front()['name'] as string}/SKILL.md`)
-  })
-
-  test('모델 호출을 막지 않는다', () => {
-    // 켜져 있으면 사람이 슬래시로 부를 때만 뜬다 — 설정이 없어 헤매는 순간에
-    // 바로 이 스킬이 걸려야 하는데, 그 경로가 사라진다.
-    for (const key of ['disable-model-invocation', 'disable_model_invocation']) {
-      expect(front()[key] ?? false).toBe(false)
+    for (const path of PLUGIN_SKILL_FILES) {
+      expect(path.startsWith(`${PLUGIN_SKILLS}/`)).toBe(true)
+      expect(skills.get(path)).toBeDefined()
     }
   })
 
+  for (const path of PLUGIN_SKILL_FILES) {
+    const text = skills.get(path)!
+
+    test(`${path} — 프론트매터가 열리고 닫힌다`, () => {
+      // Codex 의 플러그인 검증기는 여는 구분자로 시작하지 않거나 닫히지 않은
+      // SKILL.md 를 등록 자체에서 뺀다.
+      expect(text.startsWith('---\n')).toBe(true)
+      expect(text.indexOf('\n---', 4)).toBeGreaterThan(0)
+    })
+
+    test(`${path} — 이름과 설명이 비어 있지 않다`, () => {
+      // 둘 중 하나라도 비면 Codex 가 스킬을 거부한다. 설명은 모델이 이 스킬을
+      // 부를지 정하는 유일한 근거이기도 하다.
+      const f = front(text)
+      expect((f['name'] as string).length).toBeGreaterThan(0)
+      expect((f['description'] as string).length).toBeGreaterThan(40)
+    })
+
+    test(`${path} — 디렉토리 이름이 선언한 이름과 같다`, () => {
+      // Claude 는 디렉토리 이름으로, Codex 는 프론트매터로 부른다. 갈리면 한쪽
+      // 에이전트에서만 안 뜬다.
+      expect(path).toContain(`/${front(text)['name'] as string}/SKILL.md`)
+    })
+
+    test(`${path} — 모델 호출을 막지 않는다`, () => {
+      // 켜져 있으면 사람이 슬래시로 부를 때만 뜬다 — 설정이 없어 헤매는 순간에
+      // 바로 이 스킬이 걸려야 하는데, 그 경로가 사라진다.
+      for (const key of ['disable-model-invocation', 'disable_model_invocation']) {
+        expect(front(text)[key] ?? false).toBe(false)
+      }
+    })
+  }
+
+  test('두 스킬이 서로를 가리킨다', () => {
+    // 설정만 끝내고 쓰는 법을 못 찾거나, 쓰다 막혔는데 고칠 자리를 못 찾는
+    // 것이 실제 고장이다 — 이름이 갈리면 그 다리가 끊긴다.
+    expect(skill).toContain(front(usage)['name'] as string)
+    expect(usage).toContain(front(skill)['name'] as string)
+  })
+})
+
+describe('셋업 스킬', () => {
   test('부르라고 적어 둔 툴이 전부 실제로 있다', () => {
     // 툴 이름을 코드에서 바꾸면 스킬은 없는 툴을 부르라고 시킨다. 모델은
     // 그것을 오류가 아니라 "권한이 없나 보다" 로 읽고 다른 길을 찾아 헤맨다.
     for (const t of [SETUP_TOOL, SEND_TOOL, CHANNELS_TOOL, INBOX_TOOL, WHOAMI_TOOL]) {
       expect(skill).toContain(`\`${t.name}\``)
     }
+    for (const t of CONFIGURE_TOOLS) expect(skill).toContain(`\`${t.name}\``)
   })
 
   test('설정 경로가 코드와 같다', () => {
@@ -277,6 +305,36 @@ describe('셋업 스킬', () => {
     // 스킬이 없는 등급을 적으면 사용자가 그대로 쓰고 설정 로드가 실패한다.
     for (const g of GRANTS) expect(skill).toContain(`\`${g}\``)
     expect(skill).toContain(`"default": "${DEFAULT_PEER_GRANT}"`)
+  })
+})
+
+describe('사용법 스킬', () => {
+  test('설명하는 툴이 전부 실제로 있다', () => {
+    for (const t of [SEND_TOOL, CHANNELS_TOOL, INBOX_TOOL, WHOAMI_TOOL]) {
+      expect(usage).toContain(`\`${t.name}\``)
+    }
+  })
+
+  test('표시 문구가 코드가 실제로 찍는 것과 같다', () => {
+    // 이 스킬의 본업이 표시를 뜻으로 옮기는 것이다. 문구가 갈리면 모델은
+    // 설명 없는 표시를 보고 뜻을 지어낸다.
+    for (const mark of [MARK_NEW, MARK_SELF, MARK_MUTE, markPeer(DEFAULT_PEER_GRANT)]) {
+      expect(usage).toContain(mark)
+    }
+    expect(usage).toContain(markPeer('write'))
+  })
+
+  test('응답하지 않는 이유를 하나도 빠뜨리지 않는다', () => {
+    // 빠진 값은 렌더에는 그대로 뜬다 — 스킬에 없으면 모델이 그 한 값만
+    // 해석하지 못한다.
+    for (const reason of SILENCE_REASONS) expect(usage).toContain(reason)
+  })
+
+  test('막혔을 때 푸는 길을 적어 둔다', () => {
+    // 훅이 막는 것은 우회 대상이 아니다 — 푸는 것은 사용자 입력 하나뿐이고
+    // (§8.4), 그 사실이 본문에 없으면 모델이 다른 툴로 같은 일을 시도한다.
+    expect(usage).toContain('사용자가 한 줄이라도 입력하면 풀린다')
+    expect(usage).toContain('우회하지 않는다')
   })
 })
 
