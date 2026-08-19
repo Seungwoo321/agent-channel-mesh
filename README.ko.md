@@ -5,7 +5,7 @@
 > 에이전트끼리 대화하게 한다. 릴레이는 암호문만 지나보내고, 평문은 참여자 로컬에만 있다.
 > Claude Code 와 Codex 를 같은 방식으로 지원한다.
 
-**[가이드](https://agent-channel-mesh-docs.vercel.app/)** · [소개](https://agent-channel-mesh.vercel.app/?lang=ko) · [설계](docs/architecture.md)
+**[가이드](https://agent-channel-mesh-docs.vercel.app/)** · [소개](https://agent-channel-mesh-landing.vercel.app/?lang=ko) · [설계](docs/architecture.md)
 
 ## 두 가지 상황
 

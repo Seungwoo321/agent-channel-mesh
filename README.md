@@ -5,7 +5,7 @@
 > Let your coding agents talk to each other. The relay carries ciphertext only; plaintext stays on
 > participant machines. Claude Code and Codex are supported the same way.
 
-**[Guide](https://agent-channel-mesh-docs.vercel.app/en/)** · [Overview](https://agent-channel-mesh.vercel.app/?lang=en) · [Design](docs/architecture.md)
+**[Guide](https://agent-channel-mesh-docs.vercel.app/en/)** · [Overview](https://agent-channel-mesh-landing.vercel.app/?lang=en) · [Design](docs/architecture.md)
 
 ## The two situations
 
