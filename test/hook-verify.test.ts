@@ -21,6 +21,9 @@ import { MessageStore, type NewMessage, type StoredMessage } from '../src/store/
 import { renderBundle } from '../src/adapter/bundle.js'
 import { collect, runHook, HOOK_CONTEXT_LIMIT, HOOK_BATCH_LIMIT } from '../src/install/notify.js'
 import { install, mergeHooks, HOOK_MARKER } from '../src/install/hooks.js'
+import { deriveIdentity } from '../src/identity/keys.js'
+import { toKey } from '../src/identity/fingerprint.js'
+import { fromHex } from '../src/adapter/config.js'
 
 const REPO = join(import.meta.dir, '..')
 const NOTIFY = join(REPO, 'src', 'install', 'notify.ts')
@@ -614,13 +617,23 @@ async function runNotify(env: Record<string, string>, event = 'UserPromptSubmit'
   return { code, stdout, stderr }
 }
 
+const HOOK_SEED = '11'.repeat(32)
+
 async function writeConfig(path: string, storeDir: string, mode = 0o600): Promise<void> {
-  await writeFile(
-    path,
-    JSON.stringify({ seed: '11'.repeat(32), channels: [], store: { dir: storeDir } }),
-    { mode },
-  )
+  await writeFile(path, JSON.stringify({ seed: HOOK_SEED, channels: [], store: { dir: storeDir } }), {
+    mode,
+  })
   await chmod(path, mode)
+}
+
+/**
+ * 훅이 실제로 여는 자리.
+ *
+ * 설정의 `store.dir` 이 그대로 저장 위치가 아니다 — 그 아래 지문 한 칸이
+ * 붙는다(§6.3). 바깥 디렉토리에 심으면 훅은 빈 저장소를 보고, 통과가 공허해진다.
+ */
+async function storePathOf(dir: string): Promise<string> {
+  return join(dir, toKey((await deriveIdentity(fromHex(HOOK_SEED, 32))).fingerprint))
 }
 
 describe('8. 훅은 어떤 실패에서도 세션을 세우지 않는다', () => {
@@ -658,8 +671,9 @@ describe('8. 훅은 어떤 실패에서도 세션을 세우지 않는다', () =>
 
   test('저장소 파일이 깨져 있어도 0 으로 끝난다', async () => {
     const storeDir = join(dir, 'messages')
-    await mkdir(storeDir, { recursive: true, mode: 0o700 })
-    const f = join(storeDir, `${A}.json`)
+    const opened = await storePathOf(storeDir)
+    await mkdir(opened, { recursive: true, mode: 0o700 })
+    const f = join(opened, `${A}.json`)
     await writeFile(f, '{ 깨짐 ', { mode: 0o600 })
     await chmod(f, 0o600)
     const cfg = join(dir, 'ok2.json')
@@ -671,7 +685,7 @@ describe('8. 훅은 어떤 실패에서도 세션을 세우지 않는다', () =>
 
   test('정상 경로에서는 실제로 컨텍스트를 싣는다 — 위 통과가 공허하지 않다', async () => {
     const storeDir = join(dir, 'messages')
-    const s = new MessageStore({ dir: storeDir })
+    const s = new MessageStore({ dir: await storePathOf(storeDir) })
     await s.append(inbound({ text: '서브프로세스가 본 말' }))
     const cfg = join(dir, 'ok3.json')
     await writeConfig(cfg, storeDir)

@@ -15,7 +15,7 @@ import { deriveIdentity, type Identity } from '../identity/keys.js'
 import { Channel } from '../channel/channel.js'
 import { MeshNode } from '../node/node.js'
 import { RelayClient } from '../relay/client.js'
-import type { Axis, StoreOptions } from '../store/store.js'
+import { DEFAULT_STORE_DIR, type Axis, type StoreOptions } from '../store/store.js'
 import { fingerprint, parseKey, toHex, toKey } from '../identity/fingerprint.js'
 import { buildPolicy, GRANTS } from '../policy/authority.js'
 
@@ -60,7 +60,11 @@ export interface ChannelConfig {
  * 바꿀 방법이 아예 없다. 전부 선택이고, 생략하면 `MessageStore` 의 기본값이다.
  */
 export interface StoreConfig {
-  /** 저장 위치. 생략하면 설정 파일 옆(`~/.agent-channel-mesh/messages`). */
+  /**
+   * 저장 위치의 **바깥 디렉토리**. 생략하면 설정 파일 옆
+   * (`~/.agent-channel-mesh/messages`). 실제 파일은 언제나 그 아래
+   * 지문 디렉토리에 들어간다 ({@link storeOptionsOf}).
+   */
   readonly dir?: string
   /** 보관 기한(ms). 유한한 양수여야 한다 — 무제한은 열어 두지 않는다 (§6.3). */
   readonly retentionMs?: number
@@ -83,14 +87,33 @@ export interface StoreConfig {
  * **여기가 유일한 자리다.** 어댑터(`bin.ts`)와 훅(`install/notify.ts`)이 같은
  * 저장소를 봐야 하는데 각자 옮기면, 사용자가 `store.dir` 을 바꾼 순간 둘이
  * 다른 디렉토리를 보고 훅이 영원히 조용해진다.
+ *
+ * **디렉토리는 신원에서 파생한다.** 한 기계에서 에이전트마다 설정 파일을
+ * 갈라도(`ACM_CONFIG`) 저장 위치가 상수면 두 신원이 같은 채널 파일에 쓴다 —
+ * 실측된 고장이다: 코덱스의 `inbox` 가 코덱스가 보낸 말을 자기 수신함에서
+ * 읽었다. 이것이 §6.3 이 막으라는 오배달이고, `delivered` 상태까지 공유돼
+ * 한쪽이 받으면 다른 쪽에서 사라진다. 그래서 바깥 디렉토리를 사용자가 바꾸든
+ * 말든 그 아래 지문 디렉토리는 **항상** 붙인다 — 설정으로 뚫을 수 없어야
+ * 손으로 맞출 것이 하나 줄어든다.
  */
-export function storeOptionsOf(store: StoreConfig | undefined): StoreOptions {
-  if (store === undefined) return {}
+export function storeOptionsOf(store: StoreConfig | undefined, identity: Identity): StoreOptions {
+  const base = store?.dir ?? DEFAULT_STORE_DIR
   return {
-    ...(store.dir !== undefined ? { dir: store.dir } : {}),
-    ...(store.retentionMs !== undefined ? { retentionMs: store.retentionMs } : {}),
-    ...(store.maxPerChannel !== undefined ? { maxPerChannel: store.maxPerChannel } : {}),
+    dir: `${base}/${toKey(identity.fingerprint)}`,
+    ...(store?.retentionMs !== undefined ? { retentionMs: store.retentionMs } : {}),
+    ...(store?.maxPerChannel !== undefined ? { maxPerChannel: store.maxPerChannel } : {}),
   }
+}
+
+/**
+ * 설정에서 신원을 뽑는다.
+ *
+ * {@link buildNode} 와 같은 파생을 훅도 해야 한다 — 훅은 노드를 세우지 않고
+ * 저장소만 열지만, 그 저장소 경로가 이제 지문에 달려 있다. 파생을 두 곳에
+ * 적으면 갈리는 날 훅이 빈 디렉토리를 열고 영원히 조용해진다.
+ */
+export async function identityOf(config: Config): Promise<Identity> {
+  return await deriveIdentity(fromHex(config.seed, 32))
 }
 
 /**
@@ -342,7 +365,7 @@ function validateStore(raw: unknown): StoreConfig | undefined {
  * 어댑터마다 다시 쓰면 에이전트에 따라 정책이 갈린다.
  */
 export async function buildNode(config: Config): Promise<{ node: MeshNode; identity: Identity }> {
-  const identity = await deriveIdentity(fromHex(config.seed, 32))
+  const identity = await identityOf(config)
   const relay = config.relay
     ? new RelayClient({
         baseUrl: config.relay,

@@ -17,7 +17,13 @@
  * 어댑터가 이미 전달 표시를 찍어 두므로 여기서는 아무것도 안 나온다.
  * 주입이 실패했거나 세션이 놓쳤을 때만 뜬다.
  */
-import { loadConfig, storeOptionsOf, expandHome, DEFAULT_CONFIG_PATH } from '../adapter/config.js'
+import {
+  loadConfig,
+  storeOptionsOf,
+  identityOf,
+  expandHome,
+  DEFAULT_CONFIG_PATH,
+} from '../adapter/config.js'
 import { MessageStore, type StoredMessage } from '../store/store.js'
 import { renderBundle } from '../adapter/bundle.js'
 import { addTaint, clearTaint, readTaint, verdict } from '../policy/taint.js'
@@ -407,7 +413,9 @@ async function run(argv: readonly string[]): Promise<void> {
   }
 
   const config = await loadConfig(path)
-  const store = new MessageStore(storeOptionsOf(config.store))
+  // 저장소 경로가 지문에 달려 있으므로 훅도 신원을 판다 — 어댑터와 같은
+  // 디렉토리를 열지 못하면 미전달 메시지를 영영 못 본다.
+  const store = new MessageStore(storeOptionsOf(config.store, await identityOf(config)))
   const out =
     event === GATE_EVENT ? await runGate(store, () => readPayload()) : await runHook(event, store)
   process.stdout.write(JSON.stringify(out))

@@ -182,7 +182,7 @@ export async function main(argv: readonly string[]): Promise<{ stop: () => Promi
     // 안 넘겨도 서버는 뜨지만, 그러면 설정 파일의 `store.*` 는 검증만 되고
     // 아무 효과가 없다 — 사용자는 보관 기한을 줄였다고 믿는데 30일 기본값이
     // 그대로 돈다. 조용히 무시되는 설정이 없는 설정보다 나쁘다 (§6.3 · §11).
-    store: new MessageStore(storeOptionsOf(config.store)),
+    store: new MessageStore(storeOptionsOf(config.store, identity)),
     onDropped: d => process.stderr.write(`[agent-channel-mesh] 버림: ${d.reason} — ${d.detail}\n`),
   })
 }

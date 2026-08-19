@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createIdentity, generateSeed, deriveIdentity, type Identity } from '../src/identity/keys.js'
 import { Channel } from '../src/channel/channel.js'
+import { toKey } from '../src/identity/fingerprint.js'
 import { MeshNode } from '../src/node/node.js'
 import type { RelayClient } from '../src/relay/client.js'
 import { MessageStore, type NewMessage, type StoredMessage } from '../src/store/store.js'
@@ -627,7 +628,10 @@ async function fixture(store?: Record<string, unknown>): Promise<Fixture> {
   return {
     home,
     config,
-    storeDir: (store?.dir as string) ?? join(home, '.agent-channel-mesh/messages'),
+    storeDir: join(
+      (store?.dir as string) ?? join(home, '.agent-channel-mesh/messages'),
+      toKey((await deriveIdentity(seed)).fingerprint),
+    ),
     channelId: hex(new Channel({ secret }).tag),
   }
 }
@@ -690,7 +694,7 @@ describe('bin.ts 를 서브프로세스로 띄운다', () => {
     const fx = await fixtureIn(home, { dir: custom, retentionMs: 60_000, maxPerChannel: 2 })
 
     // 기한을 넘긴 것과 안 넘긴 것을 미리 심는다. 기본값(30일)으로 돌면 둘 다 보인다.
-    await seedStore(custom, fx.channelId, [
+    await seedStore(fx.storeDir, fx.channelId, [
       seeded('11', '기한을 넘긴 말', Date.now() - 600_000),
       seeded('22', '아직 살아 있는 말', Date.now() - 1_000),
     ])
@@ -718,7 +722,7 @@ describe('bin.ts 를 서브프로세스로 띄운다', () => {
       expect(res).toContain('보냈다')
     }
 
-    const file = JSON.parse(await readFile(join(custom, `${fx.channelId}.json`), 'utf8')) as {
+    const file = JSON.parse(await readFile(join(fx.storeDir, `${fx.channelId}.json`), 'utf8')) as {
       messages: { text: string }[]
     }
     // 기본값(2000)으로 돌면 셋이 다 남는다.
@@ -731,6 +735,7 @@ describe('bin.ts 를 서브프로세스로 띄운다', () => {
     const secret = new Channel().secret
     const config = join(home, 'config.json')
     const seed = generateSeed()
+    const identity = await deriveIdentity(seed)
     await writeFile(
       config,
       JSON.stringify({
@@ -749,7 +754,13 @@ describe('bin.ts 를 서브프로세스로 띄운다', () => {
       { mode: 0o600 },
     )
     await chmod(config, 0o600)
-    return { home, config, storeDir: store.dir as string, channelId: hex(new Channel({ secret }).tag) }
+    return {
+      home,
+      config,
+      // 설정이 정한 자리가 그대로 저장 위치는 아니다 — 그 아래 지문 한 칸이 붙는다.
+      storeDir: join(store.dir as string, toKey(identity.fingerprint)),
+      channelId: hex(new Channel({ secret }).tag),
+    }
   }
 })
 

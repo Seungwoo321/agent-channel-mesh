@@ -6,15 +6,18 @@
  */
 import { test, expect, describe, beforeAll } from 'bun:test'
 import { createIdentity, type Identity } from '../src/identity/keys.js'
-import { toHex } from '../src/identity/fingerprint.js'
+import { toHex, toKey } from '../src/identity/fingerprint.js'
 import {
   loadConfig,
   buildNode,
   validate,
   fromHex,
   expandHome,
+  storeOptionsOf,
+  identityOf,
   type Config,
 } from '../src/adapter/config.js'
+import { DEFAULT_STORE_DIR } from '../src/store/store.js'
 import { init, whoami, skeleton, newChannelSecret } from '../src/adapter/onboard.js'
 import { parseArgs } from '../src/adapter/bin.js'
 
@@ -189,6 +192,42 @@ describe('저장소 설정 (§6.3)', () => {
     const raw = JSON.stringify(withStore({ retentionMs: 3_600_000 }))
     const c = await loadConfig('/x.json', { read: async () => raw, mode: async () => 0o600 })
     expect(c.store?.retentionMs).toBe(3_600_000)
+  })
+})
+
+describe('저장 위치는 신원에서 파생한다 (§6.3)', () => {
+  test('기본 위치 아래 지문 디렉토리에 선다', () => {
+    const opts = storeOptionsOf(undefined, alice)
+    expect(opts.dir).toBe(`${DEFAULT_STORE_DIR}/${toKey(alice.fingerprint)}`)
+  })
+
+  test('설정한 dir 아래에도 지문이 붙는다', () => {
+    // 바깥 디렉토리는 사용자 것이지만 마지막 한 칸은 아니다 — 두 설정 파일에
+    // 같은 dir 을 적었다는 이유로 두 신원이 한 파일을 공유하면 안 된다.
+    expect(storeOptionsOf({ dir: '/tmp/acm' }, alice).dir).toBe(
+      `/tmp/acm/${toKey(alice.fingerprint)}`,
+    )
+  })
+
+  test('신원이 다르면 디렉토리가 다르다', () => {
+    // 실측된 고장이다: 한 기계에서 ACM_CONFIG 만 갈랐더니 코덱스의 inbox 가
+    // 코덱스가 보낸 말을 자기 수신함에서 읽었다. 설정만으로는 안 갈린다.
+    const same = { dir: '/tmp/acm' }
+    expect(storeOptionsOf(same, alice).dir).not.toBe(storeOptionsOf(same, bob).dir)
+  })
+
+  test('나머지 값은 그대로 옮긴다', () => {
+    const opts = storeOptionsOf({ retentionMs: 1_000, maxPerChannel: 5 }, alice)
+    expect(opts.retentionMs).toBe(1_000)
+    expect(opts.maxPerChannel).toBe(5)
+  })
+
+  test('설정의 시드에서 판 신원이 buildNode 와 같다', async () => {
+    // 훅은 노드를 안 세우고 저장소만 여는데, 그 경로가 지문에 달려 있다.
+    // 두 파생이 갈리면 훅이 빈 디렉토리를 열고 영원히 조용해진다.
+    const config = sample()
+    const { identity } = await buildNode(config)
+    expect(toKey((await identityOf(config)).fingerprint)).toBe(toKey(identity.fingerprint))
   })
 })
 

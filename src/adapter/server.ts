@@ -22,7 +22,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { MeshNode, Dropped } from '../node/node.js'
-import { MessageStore, type StoredMessage } from '../store/store.js'
+import type { MessageStore, StoredMessage } from '../store/store.js'
 import {
   callTool,
   SEND_TOOL,
@@ -73,8 +73,14 @@ export const STOP_SETTLE_MS = 2000
 export interface ServeOptions {
   readonly node: MeshNode
   readonly delivery: Delivery
-  /** 정본 저장소 (§6.3). 생략하면 기본 위치에 선다. */
-  readonly store?: MessageStore
+  /**
+   * 정본 저장소 (§6.3). **필수다.**
+   *
+   * 기본값으로 메워 주지 않는다 — 저장 위치는 신원에서 파생하는데
+   * ({@link storeOptionsOf}) 여기서 인자 없이 세우면 그 파생을 건너뛴 상수
+   * 경로에 서고, 한 기계의 두 신원이 같은 채널 파일을 공유한다.
+   */
+  readonly store: MessageStore
   /** 주입 합류 시간(ms). `push` 가 없으면 쓰이지 않는다. */
   readonly coalesceMs?: number
   /** 모델에게 줄 지시. 생략하면 전달 방식에 맞는 기본 문구. */
@@ -104,7 +110,7 @@ const BOTH_INSTRUCTIONS =
  */
 export async function serve(options: ServeOptions): Promise<{ stop: () => Promise<void> }> {
   const { node, delivery } = options
-  const store = options.store ?? new MessageStore()
+  const store = options.store
   const coalesceMs = options.coalesceMs ?? DEFAULT_COALESCE_MS
 
   // 두 성질은 서로 배타가 아니다 — `both` 가 둘 다 켠다.

@@ -2195,7 +2195,7 @@ var require_resolve = __commonJS((exports) => {
   }
   function getFullPath(resolver, id = "", normalize) {
     if (normalize !== false)
-      id = normalizeId(id);
+      id = normalizeId2(id);
     const p = resolver.parse(id);
     return _getFullPath(resolver, p);
   }
@@ -2206,12 +2206,12 @@ var require_resolve = __commonJS((exports) => {
   }
   exports._getFullPath = _getFullPath;
   var TRAILING_SLASH_HASH = /#\/?$/;
-  function normalizeId(id) {
+  function normalizeId2(id) {
     return id ? id.replace(TRAILING_SLASH_HASH, "") : "";
   }
-  exports.normalizeId = normalizeId;
+  exports.normalizeId = normalizeId2;
   function resolveUrl(resolver, baseId, id) {
-    id = normalizeId(id);
+    id = normalizeId2(id);
     return resolver.resolve(baseId, id);
   }
   exports.resolveUrl = resolveUrl;
@@ -2220,7 +2220,7 @@ var require_resolve = __commonJS((exports) => {
     if (typeof schema == "boolean")
       return {};
     const { schemaId, uriResolver } = this.opts;
-    const schId = normalizeId(schema[schemaId] || baseId);
+    const schId = normalizeId2(schema[schemaId] || baseId);
     const baseIds = { "": schId };
     const pathPrefix = getFullPath(uriResolver, schId, false);
     const localRefs = {};
@@ -2237,7 +2237,7 @@ var require_resolve = __commonJS((exports) => {
       baseIds[jsonPtr] = innerBaseId;
       function addRef(ref) {
         const _resolve = this.opts.uriResolver.resolve;
-        ref = normalizeId(innerBaseId ? _resolve(innerBaseId, ref) : ref);
+        ref = normalizeId2(innerBaseId ? _resolve(innerBaseId, ref) : ref);
         if (schemaRefs.has(ref))
           throw ambiguos(ref);
         schemaRefs.add(ref);
@@ -2246,7 +2246,7 @@ var require_resolve = __commonJS((exports) => {
           schOrRef = this.refs[schOrRef];
         if (typeof schOrRef == "object") {
           checkAmbiguosRef(sch, schOrRef.schema, ref);
-        } else if (ref !== normalizeId(fullPath)) {
+        } else if (ref !== normalizeId2(fullPath)) {
           if (ref[0] === "#") {
             checkAmbiguosRef(sch, localRefs[ref], ref);
             localRefs[ref] = sch;
@@ -14036,17 +14036,575 @@ function hex6(bytes) {
   return s;
 }
 
+// src/store/store.ts
+import { chmod, mkdir, readFile as readFile2, readdir, rename, stat as stat2, unlink as unlink2, writeFile } from "fs/promises";
+import { join } from "path";
+
+// src/store/lock.ts
+import { open as open2, readFile, stat, unlink } from "fs/promises";
+var LOCK_SUFFIX = ".lock";
+var STALE_LOCK_MS = 1e4;
+var LOCK_TIMEOUT_MS = 5000;
+var FIRST_BACKOFF_MS = 5;
+var MAX_BACKOFF_MS2 = 50;
+var LOCK_MODE = 384;
+function lockPathOf(file) {
+  return `${file}${LOCK_SUFFIX}`;
+}
+async function withLock(file, fn, options = {}) {
+  const path = lockPathOf(file);
+  const warn = options.warn ?? ((m) => process.stderr.write(`${m}
+`));
+  if (options.ensureDir !== undefined)
+    await options.ensureDir();
+  const token = await acquire(path, {
+    staleMs: options.staleMs ?? STALE_LOCK_MS,
+    timeoutMs: options.timeoutMs ?? LOCK_TIMEOUT_MS,
+    warn
+  });
+  try {
+    return await fn();
+  } finally {
+    await release(path, token, warn);
+  }
+}
+async function acquire(path, o) {
+  const deadline = Date.now() + o.timeoutMs;
+  let backoff = FIRST_BACKOFF_MS;
+  for (;; ) {
+    const token = randomToken();
+    try {
+      const fh = await open2(path, "wx", LOCK_MODE);
+      try {
+        const holder = { pid: process.pid, acquiredAt: Date.now(), token };
+        await fh.writeFile(JSON.stringify(holder));
+        await fh.chmod(LOCK_MODE);
+      } finally {
+        await fh.close();
+      }
+      return token;
+    } catch (e) {
+      if (e.code !== "EEXIST")
+        throw e;
+    }
+    const age = await lockAge(path);
+    if (age === undefined)
+      continue;
+    if (age >= o.staleMs) {
+      o.warn(`[agent-channel-mesh] \uC624\uB798\uB41C \uC7A0\uAE08\uC744 \uD68C\uC218\uD55C\uB2E4: ${path} ` + `(${Math.round(age)}ms \uACBD\uACFC, \uAE30\uC900 ${o.staleMs}ms). \uC7A0\uAE08\uC744 \uB4E4\uACE0 \uC788\uB358 \uD504\uB85C\uC138\uC2A4\uAC00 \uC8FD\uC740 \uAC83\uC73C\uB85C \uBCF8\uB2E4.`);
+      await unlinkQuiet(path);
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`\uC800\uC7A5\uC18C \uC7A0\uAE08\uC744 ${o.timeoutMs}ms \uC548\uC5D0 \uC7A1\uC9C0 \uBABB\uD588\uB2E4: ${path}. ` + `\uB2E4\uB978 \uD504\uB85C\uC138\uC2A4\uAC00 \uAC19\uC740 \uCC44\uB110\uC744 \uC624\uB798 \uBD99\uB4E4\uACE0 \uC788\uB2E4.`);
+    }
+    await sleep2(backoff / 2 + Math.random() * (backoff / 2));
+    backoff = Math.min(backoff * 2, MAX_BACKOFF_MS2);
+  }
+}
+async function release(path, token, warn) {
+  const holder = await readHolder(path);
+  if (holder === undefined)
+    return;
+  if (holder.token !== token) {
+    warn(`[agent-channel-mesh] \uB0B4 \uC7A0\uAE08\uC774 \uD68C\uC218\uB41C \uB4A4\uC600\uB2E4: ${path} ` + `(\uC9C0\uAE08 \uD640\uB354 pid ${String(holder.pid)}). \uC774 \uAD6C\uAC04\uC758 \uC4F0\uAE30\uAC00 \uACB9\uCCE4\uC744 \uC218 \uC788\uB2E4.`);
+    return;
+  }
+  await unlinkQuiet(path);
+}
+async function lockAge(path) {
+  const holder = await readHolder(path);
+  if (holder !== undefined)
+    return Date.now() - holder.acquiredAt;
+  try {
+    return Date.now() - (await stat(path)).mtimeMs;
+  } catch (e) {
+    if (isMissing(e))
+      return;
+    throw e;
+  }
+}
+async function readHolder(path) {
+  let raw;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (e) {
+    if (isMissing(e))
+      return;
+    throw e;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null)
+      return;
+    const o = parsed;
+    if (typeof o.acquiredAt !== "number" || typeof o.token !== "string")
+      return;
+    return { pid: typeof o.pid === "number" ? o.pid : -1, acquiredAt: o.acquiredAt, token: o.token };
+  } catch {
+    return;
+  }
+}
+async function unlinkQuiet(path) {
+  try {
+    await unlink(path);
+  } catch (e) {
+    if (!isMissing(e))
+      throw e;
+  }
+}
+function randomToken() {
+  const b = new Uint8Array(8);
+  crypto.getRandomValues(b);
+  let s = "";
+  for (const x of b)
+    s += x.toString(16).padStart(2, "0");
+  return s;
+}
+function sleep2(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+function isMissing(e) {
+  return e?.code === "ENOENT";
+}
+
+// src/store/store.ts
+var DEFAULT_STORE_DIR = "~/.agent-channel-mesh/messages";
+var DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+var DEFAULT_MAX_PER_CHANNEL = 2000;
+var DEFAULT_CLAIM_TTL_MS = 60000;
+var MAX_FILE_MODE = 384;
+var MAX_DIR_MODE = 448;
+var FORMAT_VERSION = 2;
+var READABLE_VERSIONS = new Set([1, 2]);
+var CHANNEL_ID = /^[0-9a-f]{2,64}$/;
+var CHANNEL_FILE = /^([0-9a-f]{2,64})\.json$/;
+var HEX = /^[0-9a-f]+$/;
+
+class MessageStore {
+  dir;
+  retention;
+  maxPerChannel;
+  claimTtl;
+  now;
+  lockTimeoutMs;
+  lockStaleMs;
+  constructor(options = {}) {
+    this.dir = expandHome(options.dir ?? DEFAULT_STORE_DIR);
+    this.retention = options.retentionMs ?? DEFAULT_RETENTION_MS;
+    this.maxPerChannel = options.maxPerChannel ?? DEFAULT_MAX_PER_CHANNEL;
+    this.claimTtl = options.claimTtlMs ?? DEFAULT_CLAIM_TTL_MS;
+    this.now = options.now ?? Date.now;
+    this.lockTimeoutMs = options.lockTimeoutMs;
+    this.lockStaleMs = options.lockStaleMs;
+    if (!Number.isFinite(this.claimTtl) || this.claimTtl <= 0) {
+      throw new Error("claimTtlMs \uB294 \uC720\uD55C\uD55C \uC591\uC218\uC5EC\uC57C \uD55C\uB2E4 \u2014 \uAE30\uD55C \uC5C6\uB294 \uC120\uC810\uC740 \uC720\uC2E4\uC774\uB2E4");
+    }
+    if (!Number.isFinite(this.retention) || this.retention <= 0) {
+      throw new Error("\uBCF4\uAD00 \uAE30\uD55C\uC740 \uC720\uD55C\uD55C \uC591\uC218\uC5EC\uC57C \uD55C\uB2E4 \u2014 \uBB34\uC81C\uD55C \uBCF4\uAD00\uC740 \uD5C8\uC6A9\uD558\uC9C0 \uC54A\uB294\uB2E4 (\xA76.3)");
+    }
+    if (!Number.isInteger(this.maxPerChannel) || this.maxPerChannel <= 0) {
+      throw new Error("maxPerChannel \uC740 1 \uC774\uC0C1\uC758 \uC815\uC218\uC5EC\uC57C \uD55C\uB2E4");
+    }
+  }
+  get retentionMs() {
+    return this.retention;
+  }
+  get claimTtlMs() {
+    return this.claimTtl;
+  }
+  get directory() {
+    return this.dir;
+  }
+  async append(record) {
+    const channelId = requireChannelId(record.channelId);
+    const direction = requireDirection(record.direction);
+    const stored = {
+      id: normalizeId(record.id),
+      channelId,
+      direction,
+      axis: requireAxis(record.axis),
+      ...record.senderKeyId !== undefined ? { senderKeyId: requireHex(record.senderKeyId, "senderKeyId") } : {},
+      ...record.senderLabel !== undefined ? { senderLabel: record.senderLabel } : {},
+      text: requireText(record.text),
+      sentAt: requireTime(record.sentAt, "sentAt"),
+      storedAt: this.now(),
+      ...record.hops !== undefined ? { hops: requireHops(record.hops) } : {},
+      ...record.authority !== undefined ? { authority: requireAuthority(record.authority) } : {},
+      ...record.grant !== undefined ? { grant: requireGrant(record.grant) } : {},
+      ...record.replyTo !== undefined ? { replyTo: requireHex(record.replyTo, "replyTo") } : {},
+      ...record.mute !== undefined ? { mute: requireMute(record.mute) } : {},
+      delivered: direction === "out"
+    };
+    return this.locked(channelId, async () => {
+      const messages = this.fresh(await this.parse(channelId));
+      messages.push(stored);
+      sortByTime(messages);
+      await this.write(channelId, this.trim(messages));
+      return stored;
+    });
+  }
+  async read(channelId, limit) {
+    const messages = await this.load(requireChannelId(channelId), true);
+    return tail(messages, limit);
+  }
+  async undelivered(channelId, limit) {
+    const ids = channelId === undefined ? await this.channels() : [requireChannelId(channelId)];
+    const out = [];
+    for (const id of ids) {
+      for (const m of await this.load(id, true))
+        if (!m.delivered)
+          out.push(m);
+    }
+    sortByTime(out);
+    return tail(out, limit);
+  }
+  async claimUndelivered(channelId, limit) {
+    const ids = channelId === undefined ? await this.channels() : [requireChannelId(channelId)];
+    if (limit !== undefined)
+      requireLimit(limit);
+    const claimed = [];
+    for (const id of ids) {
+      const room = limit === undefined ? undefined : limit - claimed.length;
+      if (room !== undefined && room <= 0)
+        break;
+      claimed.push(...await this.claimIn(id, room));
+    }
+    sortByTime(claimed);
+    return claimed;
+  }
+  async release(ids) {
+    return this.rewriteByIds(ids, (m) => m.claimedAt === undefined ? undefined : stripClaim(m));
+  }
+  async markDelivered(ids) {
+    return this.rewriteByIds(ids, (m) => m.delivered ? undefined : { ...stripClaim(m), delivered: true });
+  }
+  async purge(channelId) {
+    const file = this.pathOf(channelId);
+    try {
+      return await withLock(file, () => unlinkExisting(file), this.lockOptions());
+    } catch (e) {
+      if (isMissing2(e))
+        return false;
+      throw e;
+    }
+  }
+  async channels() {
+    let names;
+    try {
+      await this.assertDir();
+      names = await readdir(this.dir);
+    } catch (e) {
+      if (isMissing2(e))
+        return [];
+      throw e;
+    }
+    const out = names.map((n) => CHANNEL_FILE.exec(n)?.[1]).filter((v) => v !== undefined);
+    out.sort();
+    return out;
+  }
+  pathOf(channelId) {
+    return join(this.dir, `${requireChannelId(channelId)}.json`);
+  }
+  async load(channelId, persist = false) {
+    const messages = await this.parse(channelId);
+    const fresh = this.fresh(messages);
+    if (!persist || fresh.length === messages.length)
+      return fresh;
+    return this.locked(channelId, async () => {
+      const again = await this.parse(channelId);
+      const kept = this.fresh(again);
+      if (kept.length !== again.length)
+        await this.write(channelId, kept);
+      return kept;
+    });
+  }
+  async locked(channelId, fn) {
+    return withLock(this.pathOf(channelId), fn, {
+      ...this.lockOptions(),
+      ensureDir: () => this.ensureDir()
+    });
+  }
+  lockOptions() {
+    return {
+      ...this.lockStaleMs !== undefined ? { staleMs: this.lockStaleMs } : {},
+      ...this.lockTimeoutMs !== undefined ? { timeoutMs: this.lockTimeoutMs } : {}
+    };
+  }
+  async claimIn(channelId, room) {
+    return this.locked(channelId, async () => {
+      const raw = await this.parse(channelId);
+      const messages = this.fresh(raw);
+      const now = this.now();
+      const taken = [];
+      const next = messages.map((m) => {
+        if (m.delivered)
+          return m;
+        if (m.claimedAt !== undefined && now - m.claimedAt < this.claimTtl)
+          return m;
+        if (room !== undefined && taken.length >= room)
+          return m;
+        const leased = { ...m, claimedAt: now };
+        taken.push(leased);
+        return leased;
+      });
+      if (taken.length > 0 || messages.length !== raw.length)
+        await this.write(channelId, next);
+      return taken;
+    });
+  }
+  async rewriteByIds(ids, change) {
+    const wanted = new Set(ids);
+    if (wanted.size === 0)
+      return 0;
+    let changed = 0;
+    for (const channelId of await this.channels()) {
+      changed += await this.locked(channelId, async () => {
+        const messages = this.fresh(await this.parse(channelId));
+        let touched = 0;
+        const next = messages.map((m) => {
+          if (!wanted.has(m.id))
+            return m;
+          const replaced = change(m);
+          if (replaced === undefined)
+            return m;
+          touched += 1;
+          return replaced;
+        });
+        if (touched > 0)
+          await this.write(channelId, next);
+        return touched;
+      });
+    }
+    return changed;
+  }
+  fresh(messages) {
+    const cutoff = this.now() - this.retention;
+    const kept = messages.filter((m) => m.storedAt >= cutoff);
+    sortByTime(kept);
+    return kept;
+  }
+  async parse(channelId) {
+    const file = this.pathOf(channelId);
+    let raw;
+    try {
+      await this.assertDir();
+      await assertMode(file, MAX_FILE_MODE, "\uC800\uC7A5 \uD30C\uC77C", "\uB300\uD654 \uD3C9\uBB38\uC774 \uB4E4\uC5B4 \uC788\uC73C\uBBC0\uB85C chmod 600");
+      raw = await readFile2(file, "utf8");
+    } catch (e) {
+      if (isMissing2(e))
+        return [];
+      throw e;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (e) {
+      throw new Error(`\uC800\uC7A5 \uD30C\uC77C\uC774 \uC190\uC0C1\uB410\uB2E4: ${file} (${String(e)})`);
+    }
+    return parseFile(parsed, file, channelId);
+  }
+  trim(messages) {
+    return messages.length <= this.maxPerChannel ? messages : messages.slice(messages.length - this.maxPerChannel);
+  }
+  async write(channelId, messages) {
+    await this.ensureDir();
+    const file = this.pathOf(channelId);
+    const body = { version: FORMAT_VERSION, channelId, messages };
+    const tmp = `${file}.${randomHex(8)}.tmp`;
+    await writeFile(tmp, JSON.stringify(body), { mode: MAX_FILE_MODE });
+    await chmod(tmp, MAX_FILE_MODE);
+    await rename(tmp, file);
+  }
+  async assertDir() {
+    await assertMode(this.dir, MAX_DIR_MODE, "\uC800\uC7A5 \uB514\uB809\uD1A0\uB9AC", "\uCC44\uB110 \uBAA9\uB85D\uC774 \uC0C8\uBBC0\uB85C chmod 700");
+  }
+  async ensureDir() {
+    try {
+      await this.assertDir();
+      return;
+    } catch (e) {
+      if (!isMissing2(e))
+        throw e;
+    }
+    await mkdir(this.dir, { recursive: true, mode: MAX_DIR_MODE });
+    await chmod(this.dir, MAX_DIR_MODE);
+  }
+}
+async function assertMode(path, max, what, remedy) {
+  const found = (await stat2(path)).mode & 511;
+  if ((found & ~max) !== 0) {
+    throw new Error(`${what} \uAD8C\uD55C\uC774 \uB108\uBB34 \uB113\uB2E4 \u2014 ${path} (\uAD8C\uD55C ${found.toString(8).padStart(3, "0")}). ` + `${remedy} \uC73C\uB85C \uC881\uD600\uB77C.`);
+  }
+}
+function parseFile(parsed, file, channelId) {
+  if (typeof parsed !== "object" || parsed === null) {
+    throw new Error(`\uC800\uC7A5 \uD30C\uC77C\uC774 \uAC1D\uCCB4\uAC00 \uC544\uB2C8\uB2E4: ${file}`);
+  }
+  const o = parsed;
+  if (typeof o.version !== "number" || !READABLE_VERSIONS.has(o.version)) {
+    throw new Error(`\uBAA8\uB974\uB294 \uC800\uC7A5 \uD615\uC2DD\uC774\uB2E4: ${file} (version ${String(o.version)})`);
+  }
+  if (!Array.isArray(o.messages))
+    throw new Error(`\uC800\uC7A5 \uD30C\uC77C\uC5D0 messages \uBC30\uC5F4\uC774 \uC5C6\uB2E4: ${file}`);
+  return o.messages.map((m, i) => {
+    if (typeof m !== "object" || m === null) {
+      throw new Error(`messages[${i}] \uAC00 \uAC1D\uCCB4\uAC00 \uC544\uB2C8\uB2E4: ${file}`);
+    }
+    const r = m;
+    const { id, channelId: claimed, senderKeyId, senderLabel, text, sentAt, storedAt, replyTo } = r;
+    if (typeof id !== "string" || typeof claimed !== "string" || typeof text !== "string") {
+      throw new Error(`messages[${i}] \uD615\uD0DC\uAC00 \uC5B4\uAE0B\uB09C\uB2E4: ${file}`);
+    }
+    if (typeof sentAt !== "number" || typeof storedAt !== "number") {
+      throw new Error(`messages[${i}] \uC758 \uC2DC\uAC01\uC774 \uC22B\uC790\uAC00 \uC544\uB2C8\uB2E4: ${file}`);
+    }
+    if (claimed !== channelId) {
+      throw new Error(`messages[${i}] \uAC00 \uB2E4\uB978 \uCC44\uB110\uC744 \uC8FC\uC7A5\uD55C\uB2E4: ${file} ` + `(\uD30C\uC77C\uC740 ${channelId}, \uB808\uCF54\uB4DC\uB294 ${claimed.slice(0, 64)}). \uB300\uD654\uAC00 \uC624\uADC0\uC18D\uB41C\uB2E4 (\xA76.4).`);
+    }
+    if (senderLabel !== undefined && typeof senderLabel !== "string") {
+      throw new Error(`messages[${i}] \uC758 senderLabel \uC774 \uBB38\uC790\uC5F4\uC774 \uC544\uB2C8\uB2E4: ${file}`);
+    }
+    return {
+      id: requireHex(id, `messages[${i}].id`),
+      channelId,
+      direction: requireDirection(r.direction),
+      axis: requireAxis(r.axis),
+      ...senderKeyId !== undefined ? { senderKeyId: requireHex(senderKeyId, `messages[${i}].senderKeyId`) } : {},
+      ...senderLabel !== undefined ? { senderLabel } : {},
+      text,
+      sentAt,
+      storedAt,
+      ...r.hops !== undefined ? { hops: requireHops(r.hops) } : {},
+      ...r.authority !== undefined ? { authority: requireAuthority(r.authority, `messages[${i}].authority`) } : {},
+      ...r.grant !== undefined ? { grant: requireGrant(r.grant, `messages[${i}].grant`) } : {},
+      ...replyTo !== undefined ? { replyTo: requireHex(replyTo, `messages[${i}].replyTo`) } : {},
+      ...r.mute !== undefined ? { mute: requireMute(r.mute, `messages[${i}].mute`) } : {},
+      delivered: r.delivered === true,
+      ...r.claimedAt !== undefined ? { claimedAt: requireTime(r.claimedAt, `messages[${i}].claimedAt`) } : {}
+    };
+  });
+}
+function tail(messages, limit) {
+  if (limit === undefined)
+    return messages;
+  requireLimit(limit);
+  return messages.slice(Math.max(0, messages.length - limit));
+}
+function requireLimit(limit) {
+  if (!Number.isInteger(limit) || limit < 0) {
+    throw new Error(`limit \uC740 0 \uC774\uC0C1\uC758 \uC815\uC218\uB2E4: ${String(limit)}`);
+  }
+  return limit;
+}
+function stripClaim(m) {
+  if (m.claimedAt === undefined)
+    return m;
+  const { claimedAt: _dropped, ...rest } = m;
+  return rest;
+}
+async function unlinkExisting(file) {
+  try {
+    await unlink2(file);
+    return true;
+  } catch (e) {
+    if (isMissing2(e))
+      return false;
+    throw e;
+  }
+}
+function sortByTime(messages) {
+  messages.sort((a, b) => a.sentAt - b.sentAt || a.storedAt - b.storedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+}
+function requireChannelId(value) {
+  if (typeof value !== "string" || !CHANNEL_ID.test(value)) {
+    throw new Error(`\uCC44\uB110 id \uAC00 \uC62C\uBC14\uB974\uC9C0 \uC54A\uB2E4: ${String(value).slice(0, 32)}\u2026 (\uC18C\uBB38\uC790 hex 2~64\uC790)`);
+  }
+  return value;
+}
+function requireDirection(value) {
+  if (value !== "in" && value !== "out") {
+    throw new Error(`direction \uC740 in\xB7out \uC911 \uD558\uB098\uB2E4: ${String(value)}`);
+  }
+  return value;
+}
+function requireAxis(value) {
+  if (value !== "external" && value !== "internal" && value !== "local") {
+    throw new Error(`axis \uB294 external\xB7internal\xB7local \uC911 \uD558\uB098\uB2E4: ${String(value)}`);
+  }
+  return value;
+}
+function requireAuthority(value, what = "authority") {
+  if (value !== "self" && value !== "peer") {
+    throw new Error(`${what} \uB294 self\xB7peer \uC911 \uD558\uB098\uB2E4: ${String(value)}`);
+  }
+  return value;
+}
+function requireGrant(value, what = "grant") {
+  if (!isGrant(value)) {
+    throw new Error(`${what} \uC740 read\xB7write\xB7execute \uC911 \uD558\uB098\uB2E4: ${String(value)}`);
+  }
+  return value;
+}
+function requireText(value) {
+  if (typeof value !== "string")
+    throw new Error("text \uB294 \uBB38\uC790\uC5F4\uC774\uC5B4\uC57C \uD55C\uB2E4");
+  return value;
+}
+function requireTime(value, what) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${what} \uC740 epoch ms \uC22B\uC790\uC5EC\uC57C \uD55C\uB2E4: ${String(value)}`);
+  }
+  return value;
+}
+function requireHops(value) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    throw new Error(`hops \uB294 0 \uC774\uC0C1\uC758 \uC815\uC218\uB2E4: ${String(value)}`);
+  }
+  return value;
+}
+function requireHex(value, what) {
+  if (typeof value !== "string" || !HEX.test(value) || value.length % 2 !== 0) {
+    throw new Error(`${what} \uC740 \uC18C\uBB38\uC790 hex \uC5EC\uC57C \uD55C\uB2E4: ${String(value).slice(0, 32)}\u2026`);
+  }
+  return value;
+}
+function requireMute(value, what = "mute") {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${what} \uB294 \uBE44\uC5B4 \uC788\uC9C0 \uC54A\uC740 \uBB38\uC790\uC5F4\uC774\uC5B4\uC57C \uD55C\uB2E4: ${String(value).slice(0, 32)}\u2026`);
+  }
+  return value;
+}
+function normalizeId(id) {
+  return id === undefined ? randomHex(16) : requireHex(id, "id");
+}
+function randomHex(bytes) {
+  const b = new Uint8Array(bytes);
+  crypto.getRandomValues(b);
+  let s = "";
+  for (const x of b)
+    s += x.toString(16).padStart(2, "0");
+  return s;
+}
+function isMissing2(e) {
+  return e?.code === "ENOENT";
+}
+function expandHome(path, home = process.env.HOME ?? "") {
+  return path === "~" || path.startsWith("~/") ? home + path.slice(1) : path;
+}
+
 // src/adapter/config.ts
 var DEFAULT_CONFIG_PATH = "~/.agent-channel-mesh/config.json";
 var MAX_MODE = 384;
-function storeOptionsOf(store) {
-  if (store === undefined)
-    return {};
+function storeOptionsOf(store, identity) {
+  const base = store?.dir ?? DEFAULT_STORE_DIR;
   return {
-    ...store.dir !== undefined ? { dir: store.dir } : {},
-    ...store.retentionMs !== undefined ? { retentionMs: store.retentionMs } : {},
-    ...store.maxPerChannel !== undefined ? { maxPerChannel: store.maxPerChannel } : {}
+    dir: `${base}/${toKey(identity.fingerprint)}`,
+    ...store?.retentionMs !== undefined ? { retentionMs: store.retentionMs } : {},
+    ...store?.maxPerChannel !== undefined ? { maxPerChannel: store.maxPerChannel } : {}
   };
+}
+async function identityOf(config) {
+  return await deriveIdentity(fromHex(config.seed, 32));
 }
 function fromHex(hex7, expect) {
   const clean4 = hex7.replace(/\s+/g, "");
@@ -14061,11 +14619,11 @@ function fromHex(hex7, expect) {
   }
   return out;
 }
-function expandHome(path, home = process.env.HOME ?? "") {
+function expandHome2(path, home = process.env.HOME ?? "") {
   return path === "~" || path.startsWith("~/") ? home + path.slice(1) : path;
 }
 async function loadConfig(path, options = {}) {
-  const file = expandHome(path);
+  const file = expandHome2(path);
   const read = options.read ?? (async (p) => await Bun.file(p).text());
   const mode = options.mode ?? defaultMode;
   const found = await mode(file);
@@ -14081,8 +14639,8 @@ async function loadConfig(path, options = {}) {
   return validate(raw);
 }
 async function defaultMode(path) {
-  const { stat } = await import("fs/promises");
-  return (await stat(path)).mode & 511;
+  const { stat: stat3 } = await import("fs/promises");
+  return (await stat3(path)).mode & 511;
 }
 function validate(raw) {
   if (typeof raw !== "object" || raw === null)
@@ -14188,7 +14746,7 @@ function validateStore(raw) {
   };
 }
 async function buildNode(config) {
-  const identity = await deriveIdentity(fromHex(config.seed, 32));
+  const identity = await identityOf(config);
   const relay = config.relay ? new RelayClient({
     baseUrl: config.relay,
     identity,
@@ -21700,562 +22258,6 @@ class StdioServerTransport {
   }
 }
 
-// src/store/store.ts
-import { chmod, mkdir, readFile as readFile2, readdir, rename, stat as stat2, unlink as unlink2, writeFile } from "fs/promises";
-import { join } from "path";
-
-// src/store/lock.ts
-import { open as open2, readFile, stat, unlink } from "fs/promises";
-var LOCK_SUFFIX = ".lock";
-var STALE_LOCK_MS = 1e4;
-var LOCK_TIMEOUT_MS = 5000;
-var FIRST_BACKOFF_MS = 5;
-var MAX_BACKOFF_MS2 = 50;
-var LOCK_MODE = 384;
-function lockPathOf(file) {
-  return `${file}${LOCK_SUFFIX}`;
-}
-async function withLock(file, fn, options = {}) {
-  const path = lockPathOf(file);
-  const warn = options.warn ?? ((m) => process.stderr.write(`${m}
-`));
-  if (options.ensureDir !== undefined)
-    await options.ensureDir();
-  const token = await acquire(path, {
-    staleMs: options.staleMs ?? STALE_LOCK_MS,
-    timeoutMs: options.timeoutMs ?? LOCK_TIMEOUT_MS,
-    warn
-  });
-  try {
-    return await fn();
-  } finally {
-    await release(path, token, warn);
-  }
-}
-async function acquire(path, o) {
-  const deadline = Date.now() + o.timeoutMs;
-  let backoff = FIRST_BACKOFF_MS;
-  for (;; ) {
-    const token = randomToken();
-    try {
-      const fh = await open2(path, "wx", LOCK_MODE);
-      try {
-        const holder = { pid: process.pid, acquiredAt: Date.now(), token };
-        await fh.writeFile(JSON.stringify(holder));
-        await fh.chmod(LOCK_MODE);
-      } finally {
-        await fh.close();
-      }
-      return token;
-    } catch (e) {
-      if (e.code !== "EEXIST")
-        throw e;
-    }
-    const age = await lockAge(path);
-    if (age === undefined)
-      continue;
-    if (age >= o.staleMs) {
-      o.warn(`[agent-channel-mesh] \uC624\uB798\uB41C \uC7A0\uAE08\uC744 \uD68C\uC218\uD55C\uB2E4: ${path} ` + `(${Math.round(age)}ms \uACBD\uACFC, \uAE30\uC900 ${o.staleMs}ms). \uC7A0\uAE08\uC744 \uB4E4\uACE0 \uC788\uB358 \uD504\uB85C\uC138\uC2A4\uAC00 \uC8FD\uC740 \uAC83\uC73C\uB85C \uBCF8\uB2E4.`);
-      await unlinkQuiet(path);
-    }
-    if (Date.now() >= deadline) {
-      throw new Error(`\uC800\uC7A5\uC18C \uC7A0\uAE08\uC744 ${o.timeoutMs}ms \uC548\uC5D0 \uC7A1\uC9C0 \uBABB\uD588\uB2E4: ${path}. ` + `\uB2E4\uB978 \uD504\uB85C\uC138\uC2A4\uAC00 \uAC19\uC740 \uCC44\uB110\uC744 \uC624\uB798 \uBD99\uB4E4\uACE0 \uC788\uB2E4.`);
-    }
-    await sleep2(backoff / 2 + Math.random() * (backoff / 2));
-    backoff = Math.min(backoff * 2, MAX_BACKOFF_MS2);
-  }
-}
-async function release(path, token, warn) {
-  const holder = await readHolder(path);
-  if (holder === undefined)
-    return;
-  if (holder.token !== token) {
-    warn(`[agent-channel-mesh] \uB0B4 \uC7A0\uAE08\uC774 \uD68C\uC218\uB41C \uB4A4\uC600\uB2E4: ${path} ` + `(\uC9C0\uAE08 \uD640\uB354 pid ${String(holder.pid)}). \uC774 \uAD6C\uAC04\uC758 \uC4F0\uAE30\uAC00 \uACB9\uCCE4\uC744 \uC218 \uC788\uB2E4.`);
-    return;
-  }
-  await unlinkQuiet(path);
-}
-async function lockAge(path) {
-  const holder = await readHolder(path);
-  if (holder !== undefined)
-    return Date.now() - holder.acquiredAt;
-  try {
-    return Date.now() - (await stat(path)).mtimeMs;
-  } catch (e) {
-    if (isMissing(e))
-      return;
-    throw e;
-  }
-}
-async function readHolder(path) {
-  let raw;
-  try {
-    raw = await readFile(path, "utf8");
-  } catch (e) {
-    if (isMissing(e))
-      return;
-    throw e;
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== "object" || parsed === null)
-      return;
-    const o = parsed;
-    if (typeof o.acquiredAt !== "number" || typeof o.token !== "string")
-      return;
-    return { pid: typeof o.pid === "number" ? o.pid : -1, acquiredAt: o.acquiredAt, token: o.token };
-  } catch {
-    return;
-  }
-}
-async function unlinkQuiet(path) {
-  try {
-    await unlink(path);
-  } catch (e) {
-    if (!isMissing(e))
-      throw e;
-  }
-}
-function randomToken() {
-  const b = new Uint8Array(8);
-  crypto.getRandomValues(b);
-  let s = "";
-  for (const x of b)
-    s += x.toString(16).padStart(2, "0");
-  return s;
-}
-function sleep2(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-function isMissing(e) {
-  return e?.code === "ENOENT";
-}
-
-// src/store/store.ts
-var DEFAULT_STORE_DIR = "~/.agent-channel-mesh/messages";
-var DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
-var DEFAULT_MAX_PER_CHANNEL = 2000;
-var DEFAULT_CLAIM_TTL_MS = 60000;
-var MAX_FILE_MODE = 384;
-var MAX_DIR_MODE = 448;
-var FORMAT_VERSION = 2;
-var READABLE_VERSIONS = new Set([1, 2]);
-var CHANNEL_ID = /^[0-9a-f]{2,64}$/;
-var CHANNEL_FILE = /^([0-9a-f]{2,64})\.json$/;
-var HEX = /^[0-9a-f]+$/;
-
-class MessageStore {
-  dir;
-  retention;
-  maxPerChannel;
-  claimTtl;
-  now;
-  lockTimeoutMs;
-  lockStaleMs;
-  constructor(options = {}) {
-    this.dir = expandHome2(options.dir ?? DEFAULT_STORE_DIR);
-    this.retention = options.retentionMs ?? DEFAULT_RETENTION_MS;
-    this.maxPerChannel = options.maxPerChannel ?? DEFAULT_MAX_PER_CHANNEL;
-    this.claimTtl = options.claimTtlMs ?? DEFAULT_CLAIM_TTL_MS;
-    this.now = options.now ?? Date.now;
-    this.lockTimeoutMs = options.lockTimeoutMs;
-    this.lockStaleMs = options.lockStaleMs;
-    if (!Number.isFinite(this.claimTtl) || this.claimTtl <= 0) {
-      throw new Error("claimTtlMs \uB294 \uC720\uD55C\uD55C \uC591\uC218\uC5EC\uC57C \uD55C\uB2E4 \u2014 \uAE30\uD55C \uC5C6\uB294 \uC120\uC810\uC740 \uC720\uC2E4\uC774\uB2E4");
-    }
-    if (!Number.isFinite(this.retention) || this.retention <= 0) {
-      throw new Error("\uBCF4\uAD00 \uAE30\uD55C\uC740 \uC720\uD55C\uD55C \uC591\uC218\uC5EC\uC57C \uD55C\uB2E4 \u2014 \uBB34\uC81C\uD55C \uBCF4\uAD00\uC740 \uD5C8\uC6A9\uD558\uC9C0 \uC54A\uB294\uB2E4 (\xA76.3)");
-    }
-    if (!Number.isInteger(this.maxPerChannel) || this.maxPerChannel <= 0) {
-      throw new Error("maxPerChannel \uC740 1 \uC774\uC0C1\uC758 \uC815\uC218\uC5EC\uC57C \uD55C\uB2E4");
-    }
-  }
-  get retentionMs() {
-    return this.retention;
-  }
-  get claimTtlMs() {
-    return this.claimTtl;
-  }
-  get directory() {
-    return this.dir;
-  }
-  async append(record3) {
-    const channelId = requireChannelId(record3.channelId);
-    const direction = requireDirection(record3.direction);
-    const stored = {
-      id: normalizeId(record3.id),
-      channelId,
-      direction,
-      axis: requireAxis(record3.axis),
-      ...record3.senderKeyId !== undefined ? { senderKeyId: requireHex(record3.senderKeyId, "senderKeyId") } : {},
-      ...record3.senderLabel !== undefined ? { senderLabel: record3.senderLabel } : {},
-      text: requireText(record3.text),
-      sentAt: requireTime(record3.sentAt, "sentAt"),
-      storedAt: this.now(),
-      ...record3.hops !== undefined ? { hops: requireHops(record3.hops) } : {},
-      ...record3.authority !== undefined ? { authority: requireAuthority(record3.authority) } : {},
-      ...record3.grant !== undefined ? { grant: requireGrant(record3.grant) } : {},
-      ...record3.replyTo !== undefined ? { replyTo: requireHex(record3.replyTo, "replyTo") } : {},
-      ...record3.mute !== undefined ? { mute: requireMute(record3.mute) } : {},
-      delivered: direction === "out"
-    };
-    return this.locked(channelId, async () => {
-      const messages = this.fresh(await this.parse(channelId));
-      messages.push(stored);
-      sortByTime(messages);
-      await this.write(channelId, this.trim(messages));
-      return stored;
-    });
-  }
-  async read(channelId, limit) {
-    const messages = await this.load(requireChannelId(channelId), true);
-    return tail(messages, limit);
-  }
-  async undelivered(channelId, limit) {
-    const ids = channelId === undefined ? await this.channels() : [requireChannelId(channelId)];
-    const out = [];
-    for (const id of ids) {
-      for (const m of await this.load(id, true))
-        if (!m.delivered)
-          out.push(m);
-    }
-    sortByTime(out);
-    return tail(out, limit);
-  }
-  async claimUndelivered(channelId, limit) {
-    const ids = channelId === undefined ? await this.channels() : [requireChannelId(channelId)];
-    if (limit !== undefined)
-      requireLimit(limit);
-    const claimed = [];
-    for (const id of ids) {
-      const room = limit === undefined ? undefined : limit - claimed.length;
-      if (room !== undefined && room <= 0)
-        break;
-      claimed.push(...await this.claimIn(id, room));
-    }
-    sortByTime(claimed);
-    return claimed;
-  }
-  async release(ids) {
-    return this.rewriteByIds(ids, (m) => m.claimedAt === undefined ? undefined : stripClaim(m));
-  }
-  async markDelivered(ids) {
-    return this.rewriteByIds(ids, (m) => m.delivered ? undefined : { ...stripClaim(m), delivered: true });
-  }
-  async purge(channelId) {
-    const file = this.pathOf(channelId);
-    try {
-      return await withLock(file, () => unlinkExisting(file), this.lockOptions());
-    } catch (e) {
-      if (isMissing2(e))
-        return false;
-      throw e;
-    }
-  }
-  async channels() {
-    let names;
-    try {
-      await this.assertDir();
-      names = await readdir(this.dir);
-    } catch (e) {
-      if (isMissing2(e))
-        return [];
-      throw e;
-    }
-    const out = names.map((n) => CHANNEL_FILE.exec(n)?.[1]).filter((v) => v !== undefined);
-    out.sort();
-    return out;
-  }
-  pathOf(channelId) {
-    return join(this.dir, `${requireChannelId(channelId)}.json`);
-  }
-  async load(channelId, persist = false) {
-    const messages = await this.parse(channelId);
-    const fresh = this.fresh(messages);
-    if (!persist || fresh.length === messages.length)
-      return fresh;
-    return this.locked(channelId, async () => {
-      const again = await this.parse(channelId);
-      const kept = this.fresh(again);
-      if (kept.length !== again.length)
-        await this.write(channelId, kept);
-      return kept;
-    });
-  }
-  async locked(channelId, fn) {
-    return withLock(this.pathOf(channelId), fn, {
-      ...this.lockOptions(),
-      ensureDir: () => this.ensureDir()
-    });
-  }
-  lockOptions() {
-    return {
-      ...this.lockStaleMs !== undefined ? { staleMs: this.lockStaleMs } : {},
-      ...this.lockTimeoutMs !== undefined ? { timeoutMs: this.lockTimeoutMs } : {}
-    };
-  }
-  async claimIn(channelId, room) {
-    return this.locked(channelId, async () => {
-      const raw = await this.parse(channelId);
-      const messages = this.fresh(raw);
-      const now = this.now();
-      const taken = [];
-      const next = messages.map((m) => {
-        if (m.delivered)
-          return m;
-        if (m.claimedAt !== undefined && now - m.claimedAt < this.claimTtl)
-          return m;
-        if (room !== undefined && taken.length >= room)
-          return m;
-        const leased = { ...m, claimedAt: now };
-        taken.push(leased);
-        return leased;
-      });
-      if (taken.length > 0 || messages.length !== raw.length)
-        await this.write(channelId, next);
-      return taken;
-    });
-  }
-  async rewriteByIds(ids, change) {
-    const wanted = new Set(ids);
-    if (wanted.size === 0)
-      return 0;
-    let changed = 0;
-    for (const channelId of await this.channels()) {
-      changed += await this.locked(channelId, async () => {
-        const messages = this.fresh(await this.parse(channelId));
-        let touched = 0;
-        const next = messages.map((m) => {
-          if (!wanted.has(m.id))
-            return m;
-          const replaced = change(m);
-          if (replaced === undefined)
-            return m;
-          touched += 1;
-          return replaced;
-        });
-        if (touched > 0)
-          await this.write(channelId, next);
-        return touched;
-      });
-    }
-    return changed;
-  }
-  fresh(messages) {
-    const cutoff = this.now() - this.retention;
-    const kept = messages.filter((m) => m.storedAt >= cutoff);
-    sortByTime(kept);
-    return kept;
-  }
-  async parse(channelId) {
-    const file = this.pathOf(channelId);
-    let raw;
-    try {
-      await this.assertDir();
-      await assertMode(file, MAX_FILE_MODE, "\uC800\uC7A5 \uD30C\uC77C", "\uB300\uD654 \uD3C9\uBB38\uC774 \uB4E4\uC5B4 \uC788\uC73C\uBBC0\uB85C chmod 600");
-      raw = await readFile2(file, "utf8");
-    } catch (e) {
-      if (isMissing2(e))
-        return [];
-      throw e;
-    }
-    let parsed;
-    try {
-      parsed = JSON.parse(raw);
-    } catch (e) {
-      throw new Error(`\uC800\uC7A5 \uD30C\uC77C\uC774 \uC190\uC0C1\uB410\uB2E4: ${file} (${String(e)})`);
-    }
-    return parseFile(parsed, file, channelId);
-  }
-  trim(messages) {
-    return messages.length <= this.maxPerChannel ? messages : messages.slice(messages.length - this.maxPerChannel);
-  }
-  async write(channelId, messages) {
-    await this.ensureDir();
-    const file = this.pathOf(channelId);
-    const body = { version: FORMAT_VERSION, channelId, messages };
-    const tmp = `${file}.${randomHex(8)}.tmp`;
-    await writeFile(tmp, JSON.stringify(body), { mode: MAX_FILE_MODE });
-    await chmod(tmp, MAX_FILE_MODE);
-    await rename(tmp, file);
-  }
-  async assertDir() {
-    await assertMode(this.dir, MAX_DIR_MODE, "\uC800\uC7A5 \uB514\uB809\uD1A0\uB9AC", "\uCC44\uB110 \uBAA9\uB85D\uC774 \uC0C8\uBBC0\uB85C chmod 700");
-  }
-  async ensureDir() {
-    try {
-      await this.assertDir();
-      return;
-    } catch (e) {
-      if (!isMissing2(e))
-        throw e;
-    }
-    await mkdir(this.dir, { recursive: true, mode: MAX_DIR_MODE });
-    await chmod(this.dir, MAX_DIR_MODE);
-  }
-}
-async function assertMode(path, max, what, remedy) {
-  const found = (await stat2(path)).mode & 511;
-  if ((found & ~max) !== 0) {
-    throw new Error(`${what} \uAD8C\uD55C\uC774 \uB108\uBB34 \uB113\uB2E4 \u2014 ${path} (\uAD8C\uD55C ${found.toString(8).padStart(3, "0")}). ` + `${remedy} \uC73C\uB85C \uC881\uD600\uB77C.`);
-  }
-}
-function parseFile(parsed, file, channelId) {
-  if (typeof parsed !== "object" || parsed === null) {
-    throw new Error(`\uC800\uC7A5 \uD30C\uC77C\uC774 \uAC1D\uCCB4\uAC00 \uC544\uB2C8\uB2E4: ${file}`);
-  }
-  const o = parsed;
-  if (typeof o.version !== "number" || !READABLE_VERSIONS.has(o.version)) {
-    throw new Error(`\uBAA8\uB974\uB294 \uC800\uC7A5 \uD615\uC2DD\uC774\uB2E4: ${file} (version ${String(o.version)})`);
-  }
-  if (!Array.isArray(o.messages))
-    throw new Error(`\uC800\uC7A5 \uD30C\uC77C\uC5D0 messages \uBC30\uC5F4\uC774 \uC5C6\uB2E4: ${file}`);
-  return o.messages.map((m, i) => {
-    if (typeof m !== "object" || m === null) {
-      throw new Error(`messages[${i}] \uAC00 \uAC1D\uCCB4\uAC00 \uC544\uB2C8\uB2E4: ${file}`);
-    }
-    const r = m;
-    const { id, channelId: claimed, senderKeyId, senderLabel, text, sentAt, storedAt, replyTo } = r;
-    if (typeof id !== "string" || typeof claimed !== "string" || typeof text !== "string") {
-      throw new Error(`messages[${i}] \uD615\uD0DC\uAC00 \uC5B4\uAE0B\uB09C\uB2E4: ${file}`);
-    }
-    if (typeof sentAt !== "number" || typeof storedAt !== "number") {
-      throw new Error(`messages[${i}] \uC758 \uC2DC\uAC01\uC774 \uC22B\uC790\uAC00 \uC544\uB2C8\uB2E4: ${file}`);
-    }
-    if (claimed !== channelId) {
-      throw new Error(`messages[${i}] \uAC00 \uB2E4\uB978 \uCC44\uB110\uC744 \uC8FC\uC7A5\uD55C\uB2E4: ${file} ` + `(\uD30C\uC77C\uC740 ${channelId}, \uB808\uCF54\uB4DC\uB294 ${claimed.slice(0, 64)}). \uB300\uD654\uAC00 \uC624\uADC0\uC18D\uB41C\uB2E4 (\xA76.4).`);
-    }
-    if (senderLabel !== undefined && typeof senderLabel !== "string") {
-      throw new Error(`messages[${i}] \uC758 senderLabel \uC774 \uBB38\uC790\uC5F4\uC774 \uC544\uB2C8\uB2E4: ${file}`);
-    }
-    return {
-      id: requireHex(id, `messages[${i}].id`),
-      channelId,
-      direction: requireDirection(r.direction),
-      axis: requireAxis(r.axis),
-      ...senderKeyId !== undefined ? { senderKeyId: requireHex(senderKeyId, `messages[${i}].senderKeyId`) } : {},
-      ...senderLabel !== undefined ? { senderLabel } : {},
-      text,
-      sentAt,
-      storedAt,
-      ...r.hops !== undefined ? { hops: requireHops(r.hops) } : {},
-      ...r.authority !== undefined ? { authority: requireAuthority(r.authority, `messages[${i}].authority`) } : {},
-      ...r.grant !== undefined ? { grant: requireGrant(r.grant, `messages[${i}].grant`) } : {},
-      ...replyTo !== undefined ? { replyTo: requireHex(replyTo, `messages[${i}].replyTo`) } : {},
-      ...r.mute !== undefined ? { mute: requireMute(r.mute, `messages[${i}].mute`) } : {},
-      delivered: r.delivered === true,
-      ...r.claimedAt !== undefined ? { claimedAt: requireTime(r.claimedAt, `messages[${i}].claimedAt`) } : {}
-    };
-  });
-}
-function tail(messages, limit) {
-  if (limit === undefined)
-    return messages;
-  requireLimit(limit);
-  return messages.slice(Math.max(0, messages.length - limit));
-}
-function requireLimit(limit) {
-  if (!Number.isInteger(limit) || limit < 0) {
-    throw new Error(`limit \uC740 0 \uC774\uC0C1\uC758 \uC815\uC218\uB2E4: ${String(limit)}`);
-  }
-  return limit;
-}
-function stripClaim(m) {
-  if (m.claimedAt === undefined)
-    return m;
-  const { claimedAt: _dropped, ...rest } = m;
-  return rest;
-}
-async function unlinkExisting(file) {
-  try {
-    await unlink2(file);
-    return true;
-  } catch (e) {
-    if (isMissing2(e))
-      return false;
-    throw e;
-  }
-}
-function sortByTime(messages) {
-  messages.sort((a, b) => a.sentAt - b.sentAt || a.storedAt - b.storedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-}
-function requireChannelId(value) {
-  if (typeof value !== "string" || !CHANNEL_ID.test(value)) {
-    throw new Error(`\uCC44\uB110 id \uAC00 \uC62C\uBC14\uB974\uC9C0 \uC54A\uB2E4: ${String(value).slice(0, 32)}\u2026 (\uC18C\uBB38\uC790 hex 2~64\uC790)`);
-  }
-  return value;
-}
-function requireDirection(value) {
-  if (value !== "in" && value !== "out") {
-    throw new Error(`direction \uC740 in\xB7out \uC911 \uD558\uB098\uB2E4: ${String(value)}`);
-  }
-  return value;
-}
-function requireAxis(value) {
-  if (value !== "external" && value !== "internal" && value !== "local") {
-    throw new Error(`axis \uB294 external\xB7internal\xB7local \uC911 \uD558\uB098\uB2E4: ${String(value)}`);
-  }
-  return value;
-}
-function requireAuthority(value, what = "authority") {
-  if (value !== "self" && value !== "peer") {
-    throw new Error(`${what} \uB294 self\xB7peer \uC911 \uD558\uB098\uB2E4: ${String(value)}`);
-  }
-  return value;
-}
-function requireGrant(value, what = "grant") {
-  if (!isGrant(value)) {
-    throw new Error(`${what} \uC740 read\xB7write\xB7execute \uC911 \uD558\uB098\uB2E4: ${String(value)}`);
-  }
-  return value;
-}
-function requireText(value) {
-  if (typeof value !== "string")
-    throw new Error("text \uB294 \uBB38\uC790\uC5F4\uC774\uC5B4\uC57C \uD55C\uB2E4");
-  return value;
-}
-function requireTime(value, what) {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new Error(`${what} \uC740 epoch ms \uC22B\uC790\uC5EC\uC57C \uD55C\uB2E4: ${String(value)}`);
-  }
-  return value;
-}
-function requireHops(value) {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
-    throw new Error(`hops \uB294 0 \uC774\uC0C1\uC758 \uC815\uC218\uB2E4: ${String(value)}`);
-  }
-  return value;
-}
-function requireHex(value, what) {
-  if (typeof value !== "string" || !HEX.test(value) || value.length % 2 !== 0) {
-    throw new Error(`${what} \uC740 \uC18C\uBB38\uC790 hex \uC5EC\uC57C \uD55C\uB2E4: ${String(value).slice(0, 32)}\u2026`);
-  }
-  return value;
-}
-function requireMute(value, what = "mute") {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new Error(`${what} \uB294 \uBE44\uC5B4 \uC788\uC9C0 \uC54A\uC740 \uBB38\uC790\uC5F4\uC774\uC5B4\uC57C \uD55C\uB2E4: ${String(value).slice(0, 32)}\u2026`);
-  }
-  return value;
-}
-function normalizeId(id) {
-  return id === undefined ? randomHex(16) : requireHex(id, "id");
-}
-function randomHex(bytes) {
-  const b = new Uint8Array(bytes);
-  crypto.getRandomValues(b);
-  let s = "";
-  for (const x of b)
-    s += x.toString(16).padStart(2, "0");
-  return s;
-}
-function isMissing2(e) {
-  return e?.code === "ENOENT";
-}
-function expandHome2(path, home = process.env.HOME ?? "") {
-  return path === "~" || path.startsWith("~/") ? home + path.slice(1) : path;
-}
-
 // src/adapter/bundle.ts
 var BUNDLE_HEAD = "\uBA3C\uC800 \uC804\uCCB4\uB97C \uC77D\uACE0 \uD604\uC7AC \uC0C1\uD0DC\uB97C \uBCF4\uACE0\uD55C\uB2E4. \uAC1C\uBCC4 \uBA54\uC2DC\uC9C0\uC5D0 \uC989\uB2F5\uD558\uC9C0 \uC54A\uB294\uB2E4.";
 function renderBundle(messages, options = {}) {
@@ -22333,7 +22335,7 @@ function skeleton(seed, relay, relayToken) {
   };
 }
 async function init(path, options = {}) {
-  const file = expandHome(path);
+  const file = expandHome2(path);
   const exists = options.exists ?? (async (p) => await Bun.file(p).exists());
   const write = options.write ?? defaultWrite;
   const seed = generateSeed();
@@ -22690,7 +22692,7 @@ var INBOX_INSTRUCTIONS = "Other agents and people can message you over agent-cha
 var BOTH_INSTRUCTIONS = `${INSTRUCTIONS} ` + "The same messages are also kept locally: call the inbox tool to re-read them, " + "or to catch anything a notification failed to deliver. " + "Entries marked [\uC0C8 \uBA54\uC2DC\uC9C0] had not reached this session yet.";
 async function serve(options) {
   const { node, delivery } = options;
-  const store = options.store ?? new MessageStore;
+  const store = options.store;
   const coalesceMs = options.coalesceMs ?? DEFAULT_COALESCE_MS;
   const push = delivery !== "inbox";
   const inboxTool = delivery !== "push";
@@ -23034,7 +23036,7 @@ var SETUP_HINT = "agent-channel-mesh is installed but has no identity yet. " + "
 async function run(argv) {
   const path = parseConfigPath(argv);
   const event = parseEvent(argv);
-  if (!await Bun.file(expandHome(path)).exists()) {
+  if (!await Bun.file(expandHome2(path)).exists()) {
     const out2 = event === "SessionStart" ? {
       continue: true,
       suppressOutput: true,
@@ -23044,7 +23046,7 @@ async function run(argv) {
     return;
   }
   const config2 = await loadConfig(path);
-  const store = new MessageStore(storeOptionsOf(config2.store));
+  const store = new MessageStore(storeOptionsOf(config2.store, await identityOf(config2)));
   const out = event === GATE_EVENT ? await runGate(store, () => readPayload()) : await runHook(event, store);
   process.stdout.write(JSON.stringify(out));
 }
@@ -23141,8 +23143,8 @@ async function main(argv) {
 `);
     return;
   }
-  if (!await Bun.file(expandHome(args.config)).exists()) {
-    process.stderr.write(`[agent-channel-mesh] \uC124\uC815\uC774 \uC5C6\uB2E4: ${expandHome(args.config)}
+  if (!await Bun.file(expandHome2(args.config)).exists()) {
+    process.stderr.write(`[agent-channel-mesh] \uC124\uC815\uC774 \uC5C6\uB2E4: ${expandHome2(args.config)}
 ` + `[agent-channel-mesh] \uC124\uC815 \uBAA8\uB4DC\uB85C \uB72C\uB2E4 \u2014 \uC138\uC158\uC5D0\uC11C setup \uD234\uC744 \uBD80\uB974\uBA74 \uB9CC\uB4E0\uB2E4.
 `);
     return await serveSetup({
@@ -23159,7 +23161,7 @@ ${format(identity.fingerprint)}
   return await serve({
     node,
     delivery: args.delivery,
-    store: new MessageStore(storeOptionsOf(config2.store)),
+    store: new MessageStore(storeOptionsOf(config2.store, identity)),
     onDropped: (d) => process.stderr.write(`[agent-channel-mesh] \uBC84\uB9BC: ${d.reason} \u2014 ${d.detail}
 `)
   });
