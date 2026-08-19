@@ -57,3 +57,4 @@ config.json
 *.config.json
 .agent-channel-mesh/
 .env*.local
+.playwright-mcp/

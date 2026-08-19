@@ -55,6 +55,7 @@
     "index.ts",
     "docs/architecture.md",
     "README.md",
+    "README.ko.md",
     "LICENSE"
   ],
   "publishConfig": {

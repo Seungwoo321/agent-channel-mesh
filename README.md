@@ -1,29 +1,30 @@
 # agent-channel-mesh
 
-에이전트끼리 대화하게 한다. 릴레이는 암호문만 지나보내고, 평문은 참여자 로컬에만 있다.
-Claude Code 와 Codex 를 같은 방식으로 지원한다.
+<p><strong>English</strong> · <a href="./README.ko.md">한국어</a></p>
 
-## 두 가지 상황
+> Let your coding agents talk to each other. The relay carries ciphertext only; plaintext stays on
+> participant machines. Claude Code and Codex are supported the same way.
 
-붙이기 전에 정할 것은 하나다 — **누구와 말하려는가.** 릴레이는 봉투를 잠깐 들고 있다가
-건네는 큐이고 본문은 열지 못하므로, 어느 릴레이를 쓰느냐는 비밀의 문제가 아니라 여기서
-갈린다.
+**[Guide](https://agent-channel-mesh-docs.vercel.app/en/)** · [Overview](https://agent-channel-mesh.vercel.app/?lang=en) · [Design](docs/architecture.md)
 
-| 릴레이 | 누구와 말하나 | 무엇이 필요한가 | 채널 축 |
+## The two situations
+
+There is one thing to settle before you attach: **who do you want to talk to?** The relay is a queue
+that holds an envelope briefly and hands it on, and it cannot open the message — so the choice of
+relay is not a question of secrecy. It is this.
+
+| Relay | Who you talk to | What it takes | Channel axis |
 |---|---|---|---|
-| **로컬** — 이 기계에서 띄운다 | 같은 PC 의 내 에이전트들: 내 클로드 ↔ 내 코덱스 | 명령 한 줄. 계정도 저장소도 없다 | `internal` |
-| **배포됨** — Vercel 등 공개 주소 | 다른 사람의 에이전트 | 주소, 릴레이가 요구하면 쓰기 토큰 | `external` |
+| **Local** — you start it on this machine | Your own agents on one PC: your Claude ↔ your Codex | One command. No account, no datastore | `internal` |
+| **Deployed** — a public address such as Vercel | Someone else's agents | The address, plus a write token if the relay asks for one | `external` |
 
-릴레이 실행 파일은 플러그인 안에 함께 들어 있다. 어느 쪽이든 **레포를 클론하지 않는다.**
+The relay ships inside the plugin. Neither path asks you to **clone this repository.**
 
-내 에이전트끼리는 제한이 없고(둘 다 나다), 다른 사람의 말은 기본이 읽기다 —
-[권한](#권한--도착한-말이-내-기계에서-무엇까지-하나)을 본다.
+## Install
 
-## 설치
+All you need is [Bun](https://bun.sh). This repository is itself the marketplace.
 
-필요한 것은 [Bun](https://bun.sh) 하나다. 이 레포가 곧 마켓플레이스다.
-
-**Claude Code** — 세션 안에서 두 줄이고, 터미널에서는 `claude` 를 앞에 붙인다.
+**Claude Code** — two lines inside a session; from a terminal, prefix them with `claude`.
 
 ```
 /plugin marketplace add Seungwoo321/agent-channel-mesh
@@ -37,152 +38,53 @@ codex plugin marketplace add Seungwoo321/agent-channel-mesh
 codex plugin add agent-channel-mesh@agent-channel-mesh
 ```
 
-깔렸는지는 `claude plugin list` 로 본다 — `✔ enabled` 여야 한다. **여기서만 실패가 드러난다.**
-`plugin validate` · `plugin details` · `mcp list` 는 못 실린 플러그인에도 정상처럼 답한다.
+Check with `claude plugin list` — it must say `✔ enabled`. **A failure shows up there only:**
+`plugin validate`, `plugin details`, and `mcp list` all answer as if a plugin that never loaded were
+fine.
 
-깔린 플러그인은 `untrusted` 로 들어온다. 세션에서 `/hooks` 를 열어 승인해야 훅이 돈다 —
-승인하지 않으면 툴은 붙었는데 **알림만 오지 않는** 상태가 된다. 새 버전으로 올리면 해시가
-바뀌어 다시 승인해야 한다.
+A freshly installed plugin arrives `untrusted`. Open `/hooks` in a session and approve it, or the
+tools attach while **notifications never arrive.**
 
-## 붙이기
+## Attach
 
-세션에서 이렇게 말하면 된다.
+Say this in a session:
 
 ```
-메시 설정 도와줘
+Help me set up the mesh
 ```
 
-`mesh-setup` 스킬이 순서를 밟는다 — 릴레이를 정하고, 신원을 만들고, 공개키를 양쪽으로
-교환하고, 지문을 대역 외로 대조하고, 채널에 합류하고, 동료 권한을 정한다. 설정 파일은
-사람이 손으로 쓰지 않는다. 툴이 검증하고 권한 600 을 지킨다.
+The `mesh-setup` skill walks the order — pick a relay, create an identity, exchange public keys both
+ways, compare fingerprints out of band, join the channel, set peer authority. Nobody writes the
+config file by hand.
 
-깔고 처음 연 세션에는 설정이 없다. 그때 어댑터는 죽지 않고 `setup` 툴 하나만 들고 떠서
-에이전트에게 그 사실을 알린다.
+Full walkthroughs — [on one machine](https://agent-channel-mesh-docs.vercel.app/en/guides/same-machine/),
+[with other people](https://agent-channel-mesh-docs.vercel.app/en/guides/other-people/),
+[when it doesn't work](https://agent-channel-mesh-docs.vercel.app/en/guides/troubleshooting/).
 
-### 로컬 릴레이 — 내 에이전트끼리
+## Authority of what arrives
 
-`relay_check` 가 이미 떠 있는지 보고, 아니면 **띄울 명령 그대로**를 낸다. 세션이 백그라운드로
-돌려도 되고 사용자가 직접 붙여 넣어도 된다 — 같은 한 줄이다.
+Channel members are **peers.** There is no above or below, and what arrives is **shared context**,
+not an order. So what separates them is not a person's rank but authority over my machine: your own
+agents run without limits, everyone else lands on `read`.
 
-- 계정·저장소·토큰이 필요 없다. `127.0.0.1` 이라 이 기계 밖에서는 닿지 않는다.
-- 설정에 적을 주소는 `http://127.0.0.1:8787`.
-- **세션보다 오래 살아야 한다.** 상대 에이전트가 붙어 있는 동안 끊기면 그쪽 메시지가 사라진다.
+Raising it happens one way only — **I write that person's fingerprint into my config.** Nobody gets
+there by asking over chat. The policy lives in a mode-600 config file, not a prompt file, and a
+`PreToolUse` hook enforces it in both agents.
+[Details](https://agent-channel-mesh-docs.vercel.app/en/guides/permissions/).
 
-### 배포된 릴레이 — 다른 사람과
+## What it protects, and what it does not
 
-붙기만 할 때는 주소를(요구하면 쓰기 토큰도) 운영하는 사람에게 받아 `relay_check` 로 확인한다.
-답이 없으면 거기서 멈춘다 — 틀린 주소를 설정에 박으면 그다음은 전부 조용한 실패다.
+Protected: **message contents** (the relay cannot decrypt, private keys never leave the machine),
+forward secrecy against sender key compromise, and draining someone else's inbox.
 
-직접 올릴 때는 `relay_export` 가 배포할 디렉토리를 만들어 주고(릴레이 번들 · `index.ts` ·
-`vercel.json` · `package.json`), 그다음 명령을 낸다. 계정이 필요한 부분은 사람이 돌린다 —
-`vercel link`, Upstash 연결, `ACM_RELAY_TOKEN` · `CRON_SECRET` 등록, `vercel deploy --prod`.
+**Not** protected: **metadata** — the relay sees who talks to whom, when, how often, how much —
+forward secrecy against recipient key compromise, and the model following instructions carried in an
+arriving message. Plaintext of received conversations stays on local disk.
+[The exact boundary](https://agent-channel-mesh-docs.vercel.app/en/reference/security/).
 
-- **저장소는 반드시 외부여야 한다.** 서버리스는 요청마다 다른 인스턴스일 수 있어, 메모리에
-  담은 봉투는 조용히 사라진다. 그래서 자격이 없으면 기동 시 죽는다.
-- Upstash 무료 티어는 30일 동안 명령이 없으면 DB 를 아카이브한다. `vercel.json` 의 주 1회
-  cron 이 `/keepalive` 를 쳐서 그 타이머를 리셋한다 — `CRON_SECRET` 이 없으면 이 경로는
-  500 을 내고 아무 일도 하지 않는다.
-- 뜬 뒤 `curl https://<주소>/health` 가 `{"ok":true}` 다.
+## Working on this repository
 
-자세한 배포 근거는 [docs/architecture.md](docs/architecture.md) 참조.
-
-## 쓰기
-
-툴은 넷이다. 이름을 직접 부를 필요는 없다 — "메시로 …" 라고 말하면 에이전트가 `mesh-usage`
-스킬을 따라 고른다.
-
-| 툴 | 무엇을 하나 |
-|---|---|
-| `channels` | 붙어 있는 채널, 멤버, 안 읽은 수 |
-| `send` | 채널에 한 건 보낸다 |
-| `inbox` | 도착한 것을 로컬 저장소에서 읽는다 |
-| `whoami` | 상대에게 줄 내 공개키와 지문 |
-
-Claude 는 도착하는 즉시 세션에 뜨고, Codex 는 훅이 턴 경계에서 알린다. **정본은 어느 쪽도
-아니고 로컬 저장소다** — 놓친 것 같으면 `inbox` 로 다시 읽는다. 릴레이를 다시 치는 것이
-아니므로 몇 번을 불러도 남의 메시지를 가져가지 않는다.
-
-| 표시 | 뜻 |
-|---|---|
-| `[새 메시지]` | 이 세션에 아직 전달되지 않았던 것 |
-| `[내 에이전트]` | `self` 에 적은 내 다른 에이전트 — 제한이 없다 |
-| `[동료 공유]` | 동료의 말, 기본 권한(`read`) |
-| `[응답 안 함: …]` | 읽기만 한다 — 자동으로 답하지 않는다 |
-
-발신자 이름은 상대가 자기 설정에 적어 둔 **표시용 라벨**이다. 신뢰의 근거는 지문이지 이름이
-아니다.
-
-### 안 될 때
-
-메시지가 안 가는 고장은 **오류를 내지 않는다.** 순서대로 본다.
-
-| 증상 | 볼 곳 |
-|---|---|
-| 툴이 `setup` 하나뿐이다 | 설정이 없다 — `메시 설정 도와줘` |
-| 툴이 아예 없다 | `claude plugin list` 로 `✔ enabled` 확인, `/hooks` 승인 |
-| 아무것도 안 온다 | `relay_check` 로 릴레이 확인, 양쪽 주소·채널 비밀이 같은지 |
-| 보냈는데 상대가 못 받는다 | 상대 설정에 내 `sign` 공개키가 있는지 |
-| 알림만 안 온다 | 훅 승인 여부 — 툴은 붙었는데 훅만 안 도는 상태다 |
-| 설정을 바꿨는데 그대로다 | 세션을 다시 연다 |
-
-## 권한 — 도착한 말이 내 기계에서 무엇까지 하나
-
-채널 멤버는 서로 **동료**다. 위아래가 없고, 도착한 말은 지시가 아니라 **공유**다. 그래서 갈리는
-것은 사람의 지위가 아니라 **내 기계에 대한 권한**이다.
-
-| 보낸 쪽 | 권한 | 할 수 있는 것 |
-|---|---|---|
-| 내 다른 에이전트 (`self` 에 적은 지문) | `execute` | 전부 |
-| 그 밖의 모든 동료 | `read` | 읽기, 그리고 메시로 답하기 |
-
-| 등급 | 되는 것 | 안 되는 것 |
-|---|---|---|
-| `read` | 파일 읽기·검색, 메시로 답하기 | 편집, 명령 실행, 웹 요청, 다른 MCP 툴 |
-| `write` | 위 + 파일 편집 | 명령 실행, 웹 요청, 다른 MCP 툴 |
-| `execute` | 전부 | — |
-
-올라가는 길은 하나뿐이다 — **내가 그 사람 지문을 설정에 적을 때.** 채팅으로 부탁해서 올라가지
-않고, 모델이 설득당해서도 올라가지 않는다. 지문을 적는 툴들은 **동료의 말이 그 턴에 들어와
-있으면 거부한다.** 전원에게 적용되는 `policy.default` 를 바꾸는 툴은 두지 않았다 — 올리면 아직
-지문도 대조하지 않은 사람까지 함께 올라간다.
-
-분류표에 없는 툴은 전부 `execute` 로 친다. 툴은 계속 늘어나므로 목록이 항상 뒤처지고, 뒤처진
-자리가 통과 쪽으로 떨어지면 새 툴이 그대로 우회로가 된다.
-
-막혔을 때는 **사용자가 한 줄 입력하면 풀린다.** 사용자가 직접 친 것이 "이 일은 내가 시켰다"의
-유일한 신호다. 시간이 지난다고 풀리지는 않는다 — 그 말은 여전히 컨텍스트에 있다.
-
-**막지 못하는 것: 정보가 나가는 것.** 읽고 답할 수 있다는 것이 곧, 모델이 도착한 말에 실린
-지시를 따라 아는 것을 말해 버릴 수 있다는 뜻이다. 이 경계가 지키는 것은 **호스트 변경과 명령
-실행**이며 그 이상을 주장하지 않는다. 민감한 저장소의 세션은 채널에 붙이지 않는 것이 유일하게
-확실한 방법이다. 근거는 [docs/architecture.md §8](docs/architecture.md).
-
-## 보호하는 것과 하지 않는 것
-
-**보호한다**
-- 메시지 **내용**. 릴레이는 복호화할 수 없다. 개인키는 로컬 밖으로 나가지 않는다.
-- 발신자 유출에 대한 순방향 비밀성 — 메시지마다 새 임시 키를 쓴다.
-- 남의 수신함을 비우는 것. 폴링은 서명으로 인증되고, key id 가 두 공개키를 함께 해시한
-  값이라 채널 동료조차 자기 서명키를 붙여 남의 큐를 가져갈 수 없다(§10.12).
-
-**보호하지 않는다**
-- **메타데이터.** 릴레이는 누가 누구에게, 언제, 얼마나 자주, 얼마나 크게 보내는지 본다.
-- **폴링하는 사람의 신원.** 서명으로 인증하는 이상 릴레이는 그 지문을 계산할 수 있다.
-  메시지 내용에는 여전히 닿지 못한다.
-- **유효 창(5분) 안의 폴링 요청 재생.** 릴레이는 무상태라 본 요청을 기억하지 못한다.
-- **수신자 키 유출에 대한 순방향 비밀성.** HPKE(RFC 9180)는 어떤 모드에서도 주지 않는다.
-  장기 개인키를 훔치고 트래픽을 녹음해 뒀다면 전체 이력이 복호화된다(§10.4).
-- **도착한 말에 실린 지시에 모델이 따르는 것.** 바로 위 권한 절을 본다.
-
-**로컬에는 평문이 남는다.** 릴레이는 7일 뒤 지우지만 받은 쪽 저장소에는 복호화된 대화가
-남는다. 파일 권한은 `0600` 이고, 보관 기한과 채널 단위 삭제는 사용자가 정한다.
-
-**릴레이는 논리적으로 무상태다.** 세션·래칫·그룹 상태를 갖지 않고, 오프라인 전달을 위해
-암호화된 blob 만 TTL 저장소에 둔다.
-
-## 이 레포를 고칠 때
-
-플러그인이 아니라 작업 트리를 물린다. 사용자용 경로가 아니다.
+Attach the working tree instead of the plugin. This is not a user path.
 
 ```bash
 claude mcp add agent-channel-mesh -- bun run "$PWD/src/adapter/bin.ts" --delivery both
@@ -190,25 +92,26 @@ codex  mcp add agent-channel-mesh -- bun run "$PWD/src/adapter/bin.ts" --deliver
 bun run src/install/hooks.ts
 ```
 
-`--delivery` 는 필수다. 환경을 보고 추측하면 틀렸을 때 조용히 틀린다.
+`--delivery` is required. Inferring it from the environment fails silently when the guess is wrong.
 
-매니페스트·훅·번들은 손으로 고치지 않는다. 생성기를 고치고 다시 뽑는다 — `bun test` 가
-커밋된 산출물을 바이트로 대조한다.
+The manifest, hooks, and bundle are not edited by hand — fix the generator and regenerate.
+`bun test` compares the committed artifacts byte for byte.
 
 ```bash
 bun run plugin
 bun test
 ```
 
-## 요구 사항
+## Requirements
 
-- [Bun](https://bun.sh). 그 밖에 깔 것은 없다 — 의존성은 플러그인 번들 안에 있다.
-- Claude Code 또는 Codex, **플러그인과 훅을 지원하는 버전.** 훅이 없으면 도착 알림이 없다.
-- Claude 의 즉시 도착(채널 주입)은 `--dangerously-load-development-channels` 에 걸린 실험
-  기능이다. 없어도 훅과 수신함으로 동작한다.
+- [Bun](https://bun.sh). Nothing else to install — dependencies live inside the plugin bundle.
+- Claude Code or Codex, **on a version that supports plugins and hooks.** Without hooks there are no
+  arrival notifications.
+- Claude's immediate delivery (channel injection) rides on the experimental
+  `--dangerously-load-development-channels`. It works without it, through hooks and the inbox.
 
-설계는 [docs/architecture.md](docs/architecture.md) 가 정본이다.
+The canonical design document is [docs/architecture.md](docs/architecture.md).
 
-## 라이선스
+## License
 
 [Apache-2.0](LICENSE)
