@@ -73,6 +73,14 @@ codex plugin marketplace add Seungwoo321/agent-channel-mesh
 codex plugin add agent-channel-mesh@agent-channel-mesh
 ```
 
+### 깔렸는지 확인한다
+
+```bash
+claude plugin list
+```
+
+`✔ enabled` 여야 한다. 여기서만 실패가 드러난다 — `plugin validate`·`plugin details`·`mcp list` 는 못 실린 플러그인에도 정상처럼 답한다.
+
 깔린 플러그인은 `untrusted` 로 들어온다. 세션에서 `/hooks` 를 열어 승인해야 훅이 돈다 — 승인하지 않으면 MCP 툴은 붙었는데 **알림만 오지 않는** 상태가 된다. 플러그인을 새 버전으로 올리면 해시가 바뀌어 다시 승인해야 한다.
 
 ### 무엇이 깔리나

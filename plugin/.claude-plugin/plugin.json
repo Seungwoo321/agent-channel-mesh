@@ -24,7 +24,5 @@
         "both"
       ]
     }
-  },
-  "hooks": "./hooks/hooks.json",
-  "skills": "./skills/"
+  }
 }

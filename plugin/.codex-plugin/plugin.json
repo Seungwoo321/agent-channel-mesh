@@ -26,7 +26,6 @@
       "cwd": "."
     }
   },
-  "skills": "./skills/",
   "interface": {
     "displayName": "Agent Channel Mesh",
     "shortDescription": "다른 사람의 에이전트와 종단 간 암호화로 대화한다.",

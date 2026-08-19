@@ -39,7 +39,8 @@ export const CODEX_MANIFEST = `${PLUGIN_DIR}/.codex-plugin/plugin.json`
 export const PLUGIN_HOOKS = `${PLUGIN_DIR}/hooks/hooks.json`
 
 /**
- * 스킬 디렉토리. 매니페스트에 적는 경로이자 파일이 실제로 있는 자리다.
+ * 스킬 디렉토리. 두 로더가 관례로 집는 자리다 — 매니페스트에 적지 않는다
+ * ({@link claudeManifest}).
  *
  * 매니페스트·훅과 달리 **스킬 본문은 여기서 생성하지 않는다** — 산문이라
  * 코드에서 파생되는 값이 없고, 문자열 리터럴에 가둬 두면 고치는 사람이
@@ -47,7 +48,6 @@ export const PLUGIN_HOOKS = `${PLUGIN_DIR}/hooks/hooks.json`
  * 자리(프론트매터 형식, 스킬이 부르라고 적어 둔 툴 이름, 설정 경로)를
  * `test/plugin.test.ts` 가 코드와 대조한다.
  */
-const SKILLS_REL = './skills/'
 export const PLUGIN_SKILLS = `${PLUGIN_DIR}/skills`
 export const SETUP_SKILL = `${PLUGIN_SKILLS}/mesh-setup/SKILL.md`
 
@@ -168,10 +168,18 @@ const KEYWORDS = ['mcp', 'e2ee', 'messaging', 'agent']
 /**
  * Claude Code 매니페스트.
  *
- * MCP 서버와 훅을 **여기 인라인으로** 둔다. 레포 루트에 `.mcp.json` 을 두면
+ * MCP 서버를 **여기 인라인으로** 둔다. 레포 루트에 `.mcp.json` 을 두면
  * 그 파일은 이 레포에서 여는 모든 세션의 프로젝트 MCP 설정으로도 읽혀,
  * 개발용 세션에 서버가 딸려 붙는다 — 배포 산출물이 개발 환경을 바꾸는 것은
  * 의도가 아니다.
+ *
+ * **훅과 스킬은 선언하지 않는다.** 두 로더 모두 플러그인 루트의
+ * `hooks/hooks.json` 과 `skills/` 를 관례로 집는다(실측). 게다가 Claude 는
+ * `hooks` 를 적으면 같은 파일을 두 번 읽고 **플러그인 전체를 못 싣는다** —
+ * `Duplicate hooks file detected`. 이것이 "동작하는 것처럼 보이는 고장"인 이유는
+ * 드러나는 자리가 하나뿐이라서다: `plugin validate --strict` 는 통과하고,
+ * `plugin details` 는 훅·스킬 개수를 그대로 세어 보여주고, `mcp list` 는
+ * `✔ Connected` 다. `claude plugin list` 만 `✘ failed to load` 라고 말한다.
  */
 export function claudeManifest(version: string): unknown {
   return {
@@ -184,8 +192,6 @@ export function claudeManifest(version: string): unknown {
     license: 'Apache-2.0',
     keywords: KEYWORDS,
     ...(pluginMcp('claude') as object),
-    hooks: './hooks/hooks.json',
-    skills: SKILLS_REL,
   }
 }
 
@@ -193,8 +199,8 @@ export function claudeManifest(version: string): unknown {
  * Codex 매니페스트.
  *
  * 모양은 Claude 것과 같고 둘만 다르다 — 전달 방식이 `inbox` 이고,
- * Codex 앱 목록에 뜨는 `interface` 블록이 붙는다. 훅은 선언하지 않는다:
- * Codex 는 플러그인 루트의 `hooks/hooks.json` 을 관례로 집는다.
+ * Codex 앱 목록에 뜨는 `interface` 블록이 붙는다. 훅·스킬을 선언하지 않는
+ * 이유는 {@link claudeManifest} 와 같다.
  */
 export function codexManifest(version: string): unknown {
   return {
@@ -207,7 +213,6 @@ export function codexManifest(version: string): unknown {
     license: 'Apache-2.0',
     keywords: KEYWORDS,
     ...(pluginMcp('codex') as object),
-    skills: SKILLS_REL,
     interface: {
       displayName: 'Agent Channel Mesh',
       shortDescription: '다른 사람의 에이전트와 종단 간 암호화로 대화한다.',

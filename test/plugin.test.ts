@@ -120,6 +120,19 @@ describe('실행 명령', () => {
 })
 
 describe('훅', () => {
+  test('매니페스트가 훅·스킬을 선언하지 않는다', async () => {
+    // 두 로더 모두 플러그인 루트의 `hooks/hooks.json` 과 `skills/` 를 관례로
+    // 집는다. 그런데 Claude 는 `hooks` 가 적혀 있으면 같은 파일을 두 번 읽고
+    // **플러그인 전체를 못 싣는다**(`Duplicate hooks file detected`) — 훅도
+    // 스킬도 MCP 서버도 통째로 사라진다. 드러나는 자리는 `claude plugin list`
+    // 하나뿐이라 여기서 막는다.
+    for (const path of [CLAUDE_MANIFEST, CODEX_MANIFEST]) {
+      const manifest = (await committed(path)) as Record<string, unknown>
+      expect(Object.keys(manifest)).not.toContain('hooks')
+      expect(Object.keys(manifest)).not.toContain('skills')
+    }
+  })
+
   test('설치기와 같은 이벤트를 덮는다', () => {
     // 한쪽에만 이벤트를 추가하면 설치기로 깐 사람에게만 알림이 온다.
     expect(Object.keys(pluginHooks().hooks).sort()).toEqual(HOOK_EVENTS.map(e => e.name).sort())
@@ -213,12 +226,9 @@ describe('셋업 스킬', () => {
     return Bun.YAML.parse(skill.slice(4, end)) as Record<string, unknown>
   }
 
-  test('매니페스트가 가리키는 자리에 있다', async () => {
+  test('두 로더가 집는 자리에 있다', async () => {
     // 경로가 어긋나면 오류가 아니라 침묵이다 — 스킬만 목록에서 사라진다.
-    for (const path of [CLAUDE_MANIFEST, CODEX_MANIFEST]) {
-      const declared = ((await committed(path)) as { skills: string }).skills
-      expect(`${PLUGIN_DIR}/${declared.replace(/^\.\/|\/$/g, '')}`).toBe(PLUGIN_SKILLS)
-    }
+    expect(PLUGIN_SKILLS).toBe(`${PLUGIN_DIR}/skills`)
     expect(await Bun.file(SETUP_SKILL).exists()).toBe(true)
   })
 
