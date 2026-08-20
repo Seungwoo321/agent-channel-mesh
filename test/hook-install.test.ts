@@ -78,6 +78,16 @@ describe('설치', () => {
     expect(cmd).toContain('--event SessionStart')
   })
 
+  test('에이전트별 출력 계약을 명령에 고정한다', async () => {
+    await run()
+    const claude = (await readJson(claudePath())).hooks.PostToolUse[0].hooks[0].command
+    const codex = (await readJson(codexPath())).hooks.PostToolUse[0].hooks[0].command
+    expect(claude).toContain('--agent claude')
+    expect(codex).toContain('--agent codex')
+    expect(claude).not.toContain('--agent codex')
+    expect(codex).not.toContain('--agent claude')
+  })
+
   test('SessionStart 는 재개·압축까지 받는다', async () => {
     await run()
     expect((await readJson(claudePath())).hooks.SessionStart[0].matcher).toBe(

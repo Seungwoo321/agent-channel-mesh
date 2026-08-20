@@ -84,6 +84,7 @@
 - **조정값은 camelCase 다** (`timeout` · `additionalContextLimit`). `timeout_sec` · `additional_context_limit` 은 바이너리에 이름이 있어도 설정 파일 파서가 읽지 않는다 — 조용히 버리고 기본값(600초 · 무제한)으로 떨어진다.
 - **`codex doctor` 로 검증하지 않는다.** 일부러 깨뜨린 JSON 도 `config.load: ok` 다. 확인하는 유일한 길은 `codex app-server` 에 JSON-RPC `hooks/list` 를 던져 `warnings`·`errors` 를 보는 것이다.
 - 실측은 **임시 `CODEX_HOME`** 에서 한다. 사용자의 `~/.codex` 에 설치기를 돌리지 않는다.
+- **응답 envelope 은 에이전트별이다.** Codex `PostToolUse` 는 `suppressOutput` 을, `PreToolUse` 는 `continue` 를 지원하지 않는다. 설치 hook 은 `--agent codex` 를 명시하고, 공유 플러그인 hook 은 Codex가 제공하는 `PLUGIN_ROOT` 로 자동 판별한다.
 
 ## 플러그인 배포 — 레포 하나가 두 마켓플레이스다
 

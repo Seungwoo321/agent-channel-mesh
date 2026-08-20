@@ -7,6 +7,9 @@
  * 갈리는" 고장이라, 여기서 대조해 둔다.
  */
 import { test, expect, describe } from 'bun:test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   claudeManifest,
   codexManifest,
@@ -122,6 +125,36 @@ describe('번들', () => {
     const lines = text.split('\n').length
     expect(lines).toBeGreaterThan(1000)
   })
+
+  test('Codex 플러그인 hook 은 PostToolUse에서 unsupported 필드를 내보내지 않는다', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'acm-plugin-hook-'))
+    try {
+      const proc = Bun.spawn(
+        [
+          'bun',
+          PLUGIN_BUNDLE,
+          'hook',
+          '--event',
+          'PostToolUse',
+          '--config',
+          join(home, 'missing.json'),
+        ],
+        {
+          env: { ...process.env, PLUGIN_ROOT: home },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        },
+      )
+      const [code, stdout] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+      ])
+      expect(code).toBe(0)
+      expect(JSON.parse(stdout)).toEqual({})
+    } finally {
+      await rm(home, { recursive: true, force: true })
+    }
+  }, 30_000)
 })
 
 describe('실행 명령', () => {

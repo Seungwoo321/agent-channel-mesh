@@ -5,9 +5,11 @@
  *
  * MCP 서버는 세션에 먼저 말을 걸지 못한다. 채널 주입(§4)은 Claude 의 개발
  * 플래그에 걸려 있고, Codex 에는 그 경로가 아예 없다. 남는 것이 훅이다 —
- * **두 에이전트 모두 같은 형식**이고, 둘 다 `hookSpecificOutput.additionalContext`
- * 로 모델 컨텍스트에 실제로 들어간다(사용자에게만 보이는 `systemMessage` 와
- * 다르다). 그래서 이 스크립트는 에이전트별로 갈리지 않는다.
+ * 두 에이전트 모두 `hookSpecificOutput.additionalContext` 로 모델 컨텍스트에
+ * 실제로 들어간다(사용자에게만 보이는 `systemMessage` 와 다르다). 다만
+ * 응답 envelope 은 에이전트별 계약에 맞춰 직렬화한다. Codex 의
+ * `PostToolUse` 는 `suppressOutput` 을, `PreToolUse` 는 `continue` 를 지원하지
+ * 않으므로 Claude 호환 필드를 그대로 내보내면 hook 자체가 실패한다.
  *
  * **릴레이를 치지 않는다**(§4·CLAUDE.md). 드레인하는 곳은 코어의 루프
  * 하나뿐이다 — 큐는 꺼내면 사라지므로 훅이 따로 치면 어댑터의 메시지를
@@ -81,19 +83,37 @@ const KNOWN_EVENTS = new Set([
  */
 export const GATE_EVENT = 'PreToolUse'
 
+export type HookAgent = 'claude' | 'codex'
+
+export interface HookSpecificOutput {
+  readonly hookEventName: string
+  readonly additionalContext?: string
+  /**
+   * `deny` 만 쓴다 — Codex 는 `allow`·`ask` 를 만나면 판정을 오류로 버린다.
+   * 통과는 판정을 안 싣는 것으로 표현한다.
+   */
+  readonly permissionDecision?: 'deny'
+  readonly permissionDecisionReason?: string
+}
+
+/**
+ * 내부 결과의 공통 타입이다. `continue` 와 `suppressOutput` 은 Claude
+ * 직렬화에서만 채워지고, Codex 직렬화에서는 절대 출력하지 않는다.
+ */
 export interface HookOutput {
-  readonly continue: true
-  readonly suppressOutput: true
-  readonly hookSpecificOutput?: {
-    readonly hookEventName: string
-    readonly additionalContext?: string
-    /**
-     * `deny` 만 쓴다 — Codex 0.147 은 `allow`·`ask` 를 만나면 판정을 오류로
-     * 버린다. 통과는 판정을 안 싣는 것으로 표현한다.
-     */
-    readonly permissionDecision?: 'deny'
-    readonly permissionDecisionReason?: string
-  }
+  readonly continue?: true
+  readonly suppressOutput?: true
+  readonly hookSpecificOutput?: HookSpecificOutput
+}
+
+/** 에이전트가 허용하는 hook 응답 envelope 을 만든다. */
+function hookOutputOf(
+  agent: HookAgent,
+  hookSpecificOutput?: HookSpecificOutput,
+): HookOutput {
+  const context = hookSpecificOutput === undefined ? {} : { hookSpecificOutput }
+  if (agent === 'codex') return context
+  return { continue: true, suppressOutput: true, ...context }
 }
 
 /**
@@ -220,43 +240,39 @@ function warn(what: string): (e: unknown) => void {
  * 안전망이 삼킨 메시지는 다시 잡아 줄 다음 그물이 없다. 그래서 이벤트 판정이
  * 저장소 접근보다 **먼저** 온다.
  */
-export async function runHook(event: string, store: MessageStore): Promise<HookOutput> {
-  if (!KNOWN_EVENTS.has(event)) return { continue: true, suppressOutput: true }
+export async function runHook(
+  event: string,
+  store: MessageStore,
+  agent: HookAgent = 'claude',
+): Promise<HookOutput> {
+  if (!KNOWN_EVENTS.has(event)) return hookOutputOf(agent)
 
   // 오염을 푸는 유일한 자리다(§8.3). **집기 전에** 푼다 — 뒤에 풀면 이번에
   // 같이 실린 동료 발화까지 지워져 오염 없이 세션에 들어간다.
   if (event === 'UserPromptSubmit') await clearTaint(store.directory)
 
   const text = await collect(store)
-  if (text === '') {
-    return { continue: true, suppressOutput: true }
-  }
-  return {
-    continue: true,
-    suppressOutput: true,
-    hookSpecificOutput: { hookEventName: event, additionalContext: text },
-  }
+  if (text === '') return hookOutputOf(agent)
+  return hookOutputOf(agent, { hookEventName: event, additionalContext: text })
 }
 
 /** 통과 = 판정을 싣지 않는 것. */
-const PASS: HookOutput = { continue: true, suppressOutput: true }
+function pass(agent: HookAgent): HookOutput {
+  return hookOutputOf(agent)
+}
 
 /**
  * 거부. 막는 것은 이 툴 호출 하나이고 세션은 계속 간다.
  *
- * **`continue: false` 를 쓰지 않는다** — Codex 0.147 은 그 필드를 만나면
- * 판정을 통째로 버려, 막았다고 믿는데 안 막힌 상태가 된다.
+ * Codex 에서는 `permissionDecision` 만 내보낸다. Claude 쪽에는 기존의
+ * `continue`·`suppressOutput` 호환 필드를 함께 싣는다.
  */
-function denial(reason: string): HookOutput {
-  return {
-    continue: true,
-    suppressOutput: true,
-    hookSpecificOutput: {
-      hookEventName: GATE_EVENT,
-      permissionDecision: 'deny',
-      permissionDecisionReason: reason,
-    },
-  }
+function denial(reason: string, agent: HookAgent): HookOutput {
+  return hookOutputOf(agent, {
+    hookEventName: GATE_EVENT,
+    permissionDecision: 'deny',
+    permissionDecisionReason: reason,
+  })
 }
 
 /**
@@ -269,6 +285,7 @@ function denial(reason: string): HookOutput {
 export async function runGate(
   store: MessageStore,
   readInput: () => Promise<string | undefined>,
+  agent: HookAgent = 'claude',
 ): Promise<HookOutput> {
   let taint
   try {
@@ -278,9 +295,10 @@ export async function runGate(
     return denial(
       `권한 상태 파일을 읽지 못했다 (${String(e)}). 판정할 수 없으므로 막는다. ` +
         `${store.directory}/authority.state.json 을 확인해라 — 사용자가 한 줄 입력하면 상태가 정리된다.`,
+      agent,
     )
   }
-  if (taint === undefined) return PASS
+  if (taint === undefined) return pass(agent)
 
   const raw = await readInput().catch(() => undefined)
   const tool = raw === undefined ? undefined : toolNameOf(raw)
@@ -288,11 +306,12 @@ export async function runGate(
     return denial(
       '동료가 공유한 말이 이 턴에 들어와 있는데, 어떤 툴을 부르려는지 읽지 못했다. ' +
         '무엇인지 모르는 호출은 막는다. 사용자가 한 줄이라도 입력하면 풀린다.',
+      agent,
     )
   }
 
   const v = verdict(taint, tool)
-  return v.deny ? denial(v.reason) : PASS
+  return v.deny ? denial(v.reason, agent) : pass(agent)
 }
 
 /**
@@ -343,6 +362,32 @@ export function parseEvent(argv: readonly string[]): string {
 }
 
 /**
+ * 훅 출력 계약을 선택한다.
+ *
+ * 설치기가 넣은 `--agent` 가 가장 명시적인 신호다. 플러그인 번들은 두
+ * 에이전트가 같은 `hooks/hooks.json` 을 읽으므로 플래그를 하나로 고정할 수
+ * 없다. Codex 플러그인 hook 이 공식적으로 제공하는 `PLUGIN_ROOT` 를 그때의
+ * 자동 판별 신호로 쓴다. 그 외의 직접 실행은 기존 Claude 기본값을 유지한다.
+ */
+export function parseAgent(
+  argv: readonly string[],
+  env: Record<string, string | undefined> = process.env,
+): HookAgent {
+  const i = argv.indexOf('--agent')
+  if (i >= 0) {
+    const value = argv[i + 1]
+    if (value === undefined || value.startsWith('--')) {
+      throw new Error('--agent 에 값이 없다.')
+    }
+    if (value !== 'claude' && value !== 'codex') {
+      throw new Error(`--agent 는 claude·codex 중 하나여야 한다 (받은 값: ${value})`)
+    }
+    return value
+  }
+  return env.PLUGIN_ROOT?.trim() === '' || env.PLUGIN_ROOT === undefined ? 'claude' : 'codex'
+}
+
+/**
  * 이 훅이 읽을 설정 파일 (§6.4).
  *
  * 우선순위는 `--config` → `ACM_CONFIG` → 기본값이다. 플래그가 환경변수를
@@ -369,11 +414,18 @@ export function parseConfigPath(
  * 세션을 세우는 것은 안전망이 만드는 사고다. 진단은 stderr 로만 남긴다.
  */
 export async function hookMain(argv: readonly string[]): Promise<void> {
-  await run(argv).catch((e: unknown) => {
+  let agent: HookAgent =
+    process.env.PLUGIN_ROOT?.trim() === '' || process.env.PLUGIN_ROOT === undefined
+      ? 'claude'
+      : 'codex'
+  try {
+    agent = parseAgent(argv)
+    await run(argv, agent)
+  } catch (e: unknown) {
     process.stderr.write(`[agent-channel-mesh] 훅이 실패했다: ${String(e)}\n`)
     // 실패해도 세션은 계속 간다. 출력이 없으면 에이전트는 그냥 지나친다.
-    process.stdout.write(JSON.stringify({ continue: true, suppressOutput: true }))
-  })
+    process.stdout.write(JSON.stringify(hookOutputOf(agent)))
+  }
 }
 
 /**
@@ -389,7 +441,7 @@ export const SETUP_HINT =
   'ask the user for a relay URL and a display name, then call it. ' +
   'Mention this only if the user brings up messaging; do not interrupt their task for it.'
 
-async function run(argv: readonly string[]): Promise<void> {
+async function run(argv: readonly string[], agent: HookAgent): Promise<void> {
   const path = parseConfigPath(argv)
   const event = parseEvent(argv)
 
@@ -402,12 +454,8 @@ async function run(argv: readonly string[]): Promise<void> {
   if (!(await Bun.file(expandHome(path)).exists())) {
     const out: HookOutput =
       event === 'SessionStart'
-        ? {
-            continue: true,
-            suppressOutput: true,
-            hookSpecificOutput: { hookEventName: event, additionalContext: SETUP_HINT },
-          }
-        : PASS
+        ? hookOutputOf(agent, { hookEventName: event, additionalContext: SETUP_HINT })
+        : pass(agent)
     process.stdout.write(JSON.stringify(out))
     return
   }
@@ -417,7 +465,9 @@ async function run(argv: readonly string[]): Promise<void> {
   // 디렉토리를 열지 못하면 미전달 메시지를 영영 못 본다.
   const store = new MessageStore(storeOptionsOf(config.store, await identityOf(config)))
   const out =
-    event === GATE_EVENT ? await runGate(store, () => readPayload()) : await runHook(event, store)
+    event === GATE_EVENT
+      ? await runGate(store, () => readPayload(), agent)
+      : await runHook(event, store, agent)
   process.stdout.write(JSON.stringify(out))
 }
 

@@ -8,9 +8,10 @@
  * 툴이 응답하므로 고장으로 보이지 않고, 사용자는 상대가 조용한 줄 안다.
  * §4 가 전달 방식을 명시로만 정하는 것과 같은 이유로 이 상태를 허용하지 않는다.
  *
- * **두 에이전트가 같은 형식을 쓴다.** `hooks.json` 구조와 이벤트 이름이
- * 호환되고, 둘 다 `hookSpecificOutput.additionalContext` 로 모델 컨텍스트에
- * 들어간다. 그래서 스크립트는 하나이고 등록 자리만 다르다.
+ * `hooks.json` 구조와 이벤트 이름은 호환되고, 둘 다
+ * `hookSpecificOutput.additionalContext` 로 모델 컨텍스트에 들어간다. 응답
+ * envelope 은 Codex에서 지원하지 않는 필드를 피하도록 에이전트별로 고른다.
+ * 스크립트는 하나이고 등록 자리와 `--agent`만 다르다.
  *
  * | 에이전트 | 등록 자리 |
  * |---|---|
@@ -23,6 +24,7 @@
  */
 import { mkdir, readFile, rename, writeFile, chmod, stat } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
+import type { HookAgent } from './notify.js'
 
 /**
  * 우리 항목을 알아보는 표식.
@@ -110,12 +112,13 @@ export function hookCommand(
   script: string,
   event: string,
   config?: string,
+  agent: HookAgent = 'claude',
 ): string {
   for (const p of [runtime, script, ...(config === undefined ? [] : [config])]) {
     if (p.includes('"')) throw new Error(`경로에 큰따옴표가 있어 명령을 만들 수 없다: ${p}`)
   }
   const tail = config === undefined ? '' : ` --config "${config}"`
-  return `"${runtime}" run "${script}" --event ${event}${tail}`
+  return `"${runtime}" run "${script}" --event ${event} --agent ${agent}${tail}`
 }
 
 /** Claude Code 의 `hooks` 값. matcher 가 없는 이벤트는 키 자체를 뺀다. */
@@ -125,7 +128,9 @@ export function claudeHooks(runtime: string, script: string, config?: string): H
     out[e.name] = [
       {
         ...(e.matcher !== undefined ? { matcher: e.matcher } : {}),
-        hooks: [{ type: 'command', command: hookCommand(runtime, script, e.name, config) }],
+        hooks: [
+          { type: 'command', command: hookCommand(runtime, script, e.name, config, 'claude') },
+        ],
       },
     ]
   }
@@ -145,6 +150,8 @@ export function claudeHooks(runtime: string, script: string, config?: string): H
  * `additional_context_limit` 이라는 이름도 보이지만 설정 파일 파서는 그것을
  * 읽지 않는다 — 조용히 버리고 기본값(600초 · 무제한)으로 떨어진다. 우리가
  * 메시지 단위로 끊어 둔 예산이 무의미해지는 자리라 casing 하나가 곧 고장이다.
+ * 응답 형식도 Claude와 다르므로 명령에 `--agent codex`를 넣어 런타임이
+ * `suppressOutput`·`continue` 같은 Codex 비지원 필드를 내보내지 않게 한다.
  */
 export function codexHooks(runtime: string, script: string, config?: string): HookMap {
   const out: HookMap = {}
@@ -155,7 +162,7 @@ export function codexHooks(runtime: string, script: string, config?: string): Ho
         hooks: [
           {
             type: 'command',
-            command: hookCommand(runtime, script, e.name, config),
+            command: hookCommand(runtime, script, e.name, config, 'codex'),
             timeout: CODEX_TIMEOUT_SEC,
             additionalContextLimit: CODEX_CONTEXT_LIMIT,
           },

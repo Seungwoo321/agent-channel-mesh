@@ -603,8 +603,14 @@ interface HookRun {
   readonly stderr: string
 }
 
-async function runNotify(env: Record<string, string>, event = 'UserPromptSubmit'): Promise<HookRun> {
-  const proc = Bun.spawn(['bun', 'run', NOTIFY, '--event', event], {
+async function runNotify(
+  env: Record<string, string>,
+  event = 'UserPromptSubmit',
+  agent: 'claude' | 'codex' | 'auto' = 'claude',
+): Promise<HookRun> {
+  const args = ['bun', 'run', NOTIFY, '--event', event]
+  if (agent !== 'auto') args.push('--agent', agent)
+  const proc = Bun.spawn(args, {
     env: { ...process.env, ...env },
     stdout: 'pipe',
     stderr: 'pipe',
@@ -643,6 +649,16 @@ describe('8. 훅은 어떤 실패에서도 세션을 세우지 않는다', () =>
     const r = await runNotify({ ACM_CONFIG: cfg })
     expect(r.code).toBe(0)
     expect(JSON.parse(r.stdout)).toEqual({ continue: true, suppressOutput: true })
+  }, 30_000)
+
+  test('Codex 플러그인 환경은 unsupported PostToolUse 필드를 내보내지 않는다', async () => {
+    const r = await runNotify(
+      { ACM_CONFIG: join(dir, 'missing.json'), PLUGIN_ROOT: '/plugin' },
+      'PostToolUse',
+      'auto',
+    )
+    expect(r.code).toBe(0)
+    expect(JSON.parse(r.stdout)).toEqual({})
   }, 30_000)
 
   test('저장소 디렉토리 권한이 없어도 0 으로 끝난다', async () => {

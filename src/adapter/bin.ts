@@ -48,7 +48,8 @@ const USAGE = `agent-channel-mesh
 
   init                         설정을 만든다 (시드 생성 + 0600)
   whoami                       상대에게 보낼 공개키와 내 지문을 보여준다
-  hook --event <이름>          훅 런타임. 에이전트가 부른다 (직접 부를 일은 없다)
+  hook --event <이름> [--agent <claude|codex>]
+                              훅 런타임. 에이전트가 부른다 (직접 부를 일은 없다)
   --delivery <push|inbox|both> 어댑터를 띄운다
 
   --config <path>   기본값 ${DEFAULT_CONFIG_PATH} (환경변수 ACM_CONFIG 로도 지정)

@@ -18,6 +18,7 @@ import {
   collect,
   runHook,
   parseEvent,
+  parseAgent,
   parseConfigPath,
   HOOK_BATCH_LIMIT,
   HOOK_CONTEXT_LIMIT,
@@ -161,6 +162,23 @@ describe('훅 출력', () => {
     expect(out.suppressOutput).toBe(true)
   })
 
+  test('Codex PostToolUse 는 지원되는 hookSpecificOutput 만 싣는다', async () => {
+    await seed(1)
+    const out = await runHook('PostToolUse', store, 'codex')
+    expect(out).toEqual({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: expect.stringContaining('메시지 0'),
+      },
+    })
+    expect(out.continue).toBeUndefined()
+    expect(out.suppressOutput).toBeUndefined()
+  })
+
+  test('Codex 에 보낼 것이 없으면 빈 응답으로 성공한다', async () => {
+    expect(await runHook('PostToolUse', store, 'codex')).toEqual({})
+  })
+
   test('모르는 이벤트면 컨텍스트를 붙이지 않는다', async () => {
     await seed(1)
     const out = await runHook('NotAnEvent', store)
@@ -172,13 +190,27 @@ describe('훅 출력', () => {
     expect(parseEvent([])).toBe('')
     expect(parseEvent(['--event'])).toBe('')
   })
+
+  test('플러그인 환경에서는 Codex를 자동 판별하고 명시값이 우선한다', () => {
+    expect(parseAgent([], { PLUGIN_ROOT: '/plugin' })).toBe('codex')
+    expect(parseAgent([], {})).toBe('claude')
+    expect(parseAgent(['--agent', 'claude'], { PLUGIN_ROOT: '/plugin' })).toBe('claude')
+  })
 })
 
 describe('프로세스로 돌려도 세션을 세우지 않는다', () => {
   test('설정이 없어도 0 으로 끝나고 계속 진행을 낸다', async () => {
     // 훅이 실패 코드를 내면 에이전트에 따라 프롬프트 자체가 막힌다.
     const proc = Bun.spawn(
-      ['bun', 'run', join(import.meta.dir, '..', 'src', 'install', 'notify.ts'), '--event', 'Stop'],
+      [
+        'bun',
+        'run',
+        join(import.meta.dir, '..', 'src', 'install', 'notify.ts'),
+        '--event',
+        'Stop',
+        '--agent',
+        'claude',
+      ],
       {
         env: { ...process.env, ACM_CONFIG: join(dir, '없는파일.json') },
         stdout: 'pipe',

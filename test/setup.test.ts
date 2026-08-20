@@ -113,10 +113,23 @@ describe('첫 실행 안내', () => {
 })
 
 describe('설정 없는 훅 — 실제로 돌려 본다', () => {
-  async function runHookProcess(event: string): Promise<{ code: number; stdout: string }> {
+  async function runHookProcess(
+    event: string,
+    agent: 'claude' | 'codex' = 'claude',
+  ): Promise<{ code: number; stdout: string }> {
     const missing = join(await tempConfigPath(), 'nope', 'config.json')
     const proc = Bun.spawn(
-      ['bun', 'src/adapter/bin.ts', 'hook', '--event', event, '--config', missing],
+      [
+        'bun',
+        'src/adapter/bin.ts',
+        'hook',
+        '--event',
+        event,
+        '--agent',
+        agent,
+        '--config',
+        missing,
+      ],
       { stdout: 'pipe', stderr: 'pipe' },
     )
     const stdout = await new Response(proc.stdout).text()
@@ -139,6 +152,12 @@ describe('설정 없는 훅 — 실제로 돌려 본다', () => {
       continue: true,
       suppressOutput: true,
     })
+  }, 20_000)
+
+  test('Codex PostToolUse 에는 지원되지 않는 필드를 싣지 않는다', async () => {
+    const { code, stdout } = await runHookProcess('PostToolUse', 'codex')
+    expect(code).toBe(0)
+    expect(JSON.parse(stdout) as Record<string, unknown>).toEqual({})
   }, 20_000)
 })
 

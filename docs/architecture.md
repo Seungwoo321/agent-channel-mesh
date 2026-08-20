@@ -322,7 +322,7 @@ Claude 에서 `both` 가 필요한 이유가 둘이다.
 
 셋을 전부 구현하고, **가능한 것을 전부 켠다.** 하나만 고르면 그것이 막힐 때 통째로 막힌다 — 주입은 개발 플래그에 걸려 있고, 훅은 에이전트가 그 이벤트를 노출해야 한다.
 
-**훅은 두 에이전트 모두에 있고 형식이 같다.** `hooks.json` 구조와 이벤트 이름(`SessionStart`·`UserPromptSubmit`·`PostToolUse`·`Stop`·`PreCompact` 등)이 호환되며, 둘 다 `hookSpecificOutput.additionalContext` 로 **모델 컨텍스트에 실제로 들어간다**(사용자에게만 보이는 `systemMessage` 와 다르다). 그래서 훅 스크립트는 에이전트별로 갈리지 않는다 — §4 의 어댑터 경계가 여기서도 유지된다.
+**훅은 두 에이전트 모두에 있고 이벤트 구조가 호환된다.** `SessionStart`·`UserPromptSubmit`·`PostToolUse`·`Stop`·`PreCompact` 등의 이벤트와 `hookSpecificOutput.additionalContext` 를 공유하므로 메시지는 **모델 컨텍스트에 실제로 들어간다**(사용자에게만 보이는 `systemMessage` 와 다르다). 다만 응답 envelope 은 에이전트별 계약을 따른다. Claude 설치 hook 은 기존 호환 필드를 유지하고, Codex hook 은 `PostToolUse`에서 지원하지 않는 `suppressOutput`과 `PreToolUse`에서 지원하지 않는 `continue`를 내보내지 않는다. 직접 설치 경로는 명령에 `--agent`를 넣고, 공유 플러그인 경로는 Codex가 제공하는 `PLUGIN_ROOT`로 자동 판별한다 — §4 의 어댑터 경계가 런타임 계약에서도 유지된다.
 
 **훅은 동기로만 등록한다.** Codex 는 async 훅을 지원하지 않고, 만나면 등록 목록에서 **통째로 뺀 뒤** 경고 한 줄만 남긴다(`hooks/list` 의 `warnings`). 파일에는 남아 있는데 한 번도 돌지 않으므로 눈으로는 정상으로 보인다 — 정확히 이 문서가 막으려는 "동작하는 것처럼 보이는 고장"이다. 턴 도중 도달은 async 가 아니라 **`PostToolUse`** 가 맡는다. 툴 호출마다 도는 동기 훅이라 긴 작업을 도는 세션도 턴 경계를 기다리지 않는다.
 

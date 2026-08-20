@@ -23436,6 +23436,12 @@ var KNOWN_EVENTS = new Set([
   "Stop"
 ]);
 var GATE_EVENT = "PreToolUse";
+function hookOutputOf(agent, hookSpecificOutput) {
+  const context = hookSpecificOutput === undefined ? {} : { hookSpecificOutput };
+  if (agent === "codex")
+    return context;
+  return { continue: true, suppressOutput: true, ...context };
+}
 async function collect(store) {
   const batch = await store.claimUndelivered(undefined, HOOK_BATCH_LIMIT);
   if (batch.length === 0)
@@ -23494,51 +23500,44 @@ function warn2(what) {
 `);
   };
 }
-async function runHook(event, store) {
+async function runHook(event, store, agent = "claude") {
   if (!KNOWN_EVENTS.has(event))
-    return { continue: true, suppressOutput: true };
+    return hookOutputOf(agent);
   if (event === "UserPromptSubmit")
     await clearTaint(store.directory);
   const text = await collect(store);
-  if (text === "") {
-    return { continue: true, suppressOutput: true };
-  }
-  return {
-    continue: true,
-    suppressOutput: true,
-    hookSpecificOutput: { hookEventName: event, additionalContext: text }
-  };
+  if (text === "")
+    return hookOutputOf(agent);
+  return hookOutputOf(agent, { hookEventName: event, additionalContext: text });
 }
-var PASS2 = { continue: true, suppressOutput: true };
-function denial(reason) {
-  return {
-    continue: true,
-    suppressOutput: true,
-    hookSpecificOutput: {
-      hookEventName: GATE_EVENT,
-      permissionDecision: "deny",
-      permissionDecisionReason: reason
-    }
-  };
+function pass(agent) {
+  return hookOutputOf(agent);
 }
-async function runGate(store, readInput) {
+function denial(reason, agent) {
+  return hookOutputOf(agent, {
+    hookEventName: GATE_EVENT,
+    permissionDecision: "deny",
+    permissionDecisionReason: reason
+  });
+}
+async function runGate(store, readInput, agent = "claude") {
   let taint;
   try {
     taint = await readTaint(store.directory);
   } catch (e) {
-    return denial(`\uAD8C\uD55C \uC0C1\uD0DC \uD30C\uC77C\uC744 \uC77D\uC9C0 \uBABB\uD588\uB2E4 (${String(e)}). \uD310\uC815\uD560 \uC218 \uC5C6\uC73C\uBBC0\uB85C \uB9C9\uB294\uB2E4. ` + `${store.directory}/authority.state.json \uC744 \uD655\uC778\uD574\uB77C \u2014 \uC0AC\uC6A9\uC790\uAC00 \uD55C \uC904 \uC785\uB825\uD558\uBA74 \uC0C1\uD0DC\uAC00 \uC815\uB9AC\uB41C\uB2E4.`);
+    return denial(`\uAD8C\uD55C \uC0C1\uD0DC \uD30C\uC77C\uC744 \uC77D\uC9C0 \uBABB\uD588\uB2E4 (${String(e)}). \uD310\uC815\uD560 \uC218 \uC5C6\uC73C\uBBC0\uB85C \uB9C9\uB294\uB2E4. ` + `${store.directory}/authority.state.json \uC744 \uD655\uC778\uD574\uB77C \u2014 \uC0AC\uC6A9\uC790\uAC00 \uD55C \uC904 \uC785\uB825\uD558\uBA74 \uC0C1\uD0DC\uAC00 \uC815\uB9AC\uB41C\uB2E4.`, agent);
   }
   if (taint === undefined)
-    return PASS2;
+    return pass(agent);
   const raw = await readInput().catch(() => {
     return;
   });
   const tool = raw === undefined ? undefined : toolNameOf(raw);
   if (tool === undefined) {
-    return denial("\uB3D9\uB8CC\uAC00 \uACF5\uC720\uD55C \uB9D0\uC774 \uC774 \uD134\uC5D0 \uB4E4\uC5B4\uC640 \uC788\uB294\uB370, \uC5B4\uB5A4 \uD234\uC744 \uBD80\uB974\uB824\uB294\uC9C0 \uC77D\uC9C0 \uBABB\uD588\uB2E4. " + "\uBB34\uC5C7\uC778\uC9C0 \uBAA8\uB974\uB294 \uD638\uCD9C\uC740 \uB9C9\uB294\uB2E4. \uC0AC\uC6A9\uC790\uAC00 \uD55C \uC904\uC774\uB77C\uB3C4 \uC785\uB825\uD558\uBA74 \uD480\uB9B0\uB2E4.");
+    return denial("\uB3D9\uB8CC\uAC00 \uACF5\uC720\uD55C \uB9D0\uC774 \uC774 \uD134\uC5D0 \uB4E4\uC5B4\uC640 \uC788\uB294\uB370, \uC5B4\uB5A4 \uD234\uC744 \uBD80\uB974\uB824\uB294\uC9C0 \uC77D\uC9C0 \uBABB\uD588\uB2E4. " + "\uBB34\uC5C7\uC778\uC9C0 \uBAA8\uB974\uB294 \uD638\uCD9C\uC740 \uB9C9\uB294\uB2E4. \uC0AC\uC6A9\uC790\uAC00 \uD55C \uC904\uC774\uB77C\uB3C4 \uC785\uB825\uD558\uBA74 \uD480\uB9B0\uB2E4.", agent);
   }
   const v = verdict(taint, tool);
-  return v.deny ? denial(v.reason) : PASS2;
+  return v.deny ? denial(v.reason, agent) : pass(agent);
 }
 function toolNameOf(raw) {
   let doc2;
@@ -23573,6 +23572,20 @@ function parseEvent(argv) {
   const i = argv.indexOf("--event");
   return i >= 0 && i + 1 < argv.length ? argv[i + 1] ?? "" : "";
 }
+function parseAgent(argv, env = process.env) {
+  const i = argv.indexOf("--agent");
+  if (i >= 0) {
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith("--")) {
+      throw new Error("--agent \uC5D0 \uAC12\uC774 \uC5C6\uB2E4.");
+    }
+    if (value !== "claude" && value !== "codex") {
+      throw new Error(`--agent \uB294 claude\xB7codex \uC911 \uD558\uB098\uC5EC\uC57C \uD55C\uB2E4 (\uBC1B\uC740 \uAC12: ${value})`);
+    }
+    return value;
+  }
+  return env.PLUGIN_ROOT?.trim() === "" || env.PLUGIN_ROOT === undefined ? "claude" : "codex";
+}
 function parseConfigPath(argv, env = process.env) {
   const i = argv.indexOf("--config");
   const flag = i >= 0 ? argv[i + 1] : undefined;
@@ -23582,28 +23595,28 @@ function parseConfigPath(argv, env = process.env) {
   return fromEnv !== undefined && fromEnv !== "" ? fromEnv : DEFAULT_CONFIG_PATH;
 }
 async function hookMain(argv) {
-  await run(argv).catch((e) => {
+  let agent = process.env.PLUGIN_ROOT?.trim() === "" || process.env.PLUGIN_ROOT === undefined ? "claude" : "codex";
+  try {
+    agent = parseAgent(argv);
+    await run(argv, agent);
+  } catch (e) {
     process.stderr.write(`[agent-channel-mesh] \uD6C5\uC774 \uC2E4\uD328\uD588\uB2E4: ${String(e)}
 `);
-    process.stdout.write(JSON.stringify({ continue: true, suppressOutput: true }));
-  });
+    process.stdout.write(JSON.stringify(hookOutputOf(agent)));
+  }
 }
 var SETUP_HINT = "agent-channel-mesh is installed but has no identity yet. " + "Its setup tool is the only tool it exposes right now \u2014 " + "ask the user for a relay URL and a display name, then call it. " + "Mention this only if the user brings up messaging; do not interrupt their task for it.";
-async function run(argv) {
+async function run(argv, agent) {
   const path = parseConfigPath(argv);
   const event = parseEvent(argv);
   if (!await Bun.file(expandHome2(path)).exists()) {
-    const out2 = event === "SessionStart" ? {
-      continue: true,
-      suppressOutput: true,
-      hookSpecificOutput: { hookEventName: event, additionalContext: SETUP_HINT }
-    } : PASS2;
+    const out2 = event === "SessionStart" ? hookOutputOf(agent, { hookEventName: event, additionalContext: SETUP_HINT }) : pass(agent);
     process.stdout.write(JSON.stringify(out2));
     return;
   }
   const config2 = await loadConfig(path);
   const store = new MessageStore(storeOptionsOf(config2.store, await identityOf(config2)));
-  const out = event === GATE_EVENT ? await runGate(store, () => readPayload()) : await runHook(event, store);
+  const out = event === GATE_EVENT ? await runGate(store, () => readPayload(), agent) : await runHook(event, store, agent);
   process.stdout.write(JSON.stringify(out));
 }
 if (false)
@@ -23614,7 +23627,8 @@ var USAGE = `agent-channel-mesh
 
   init                         \uC124\uC815\uC744 \uB9CC\uB4E0\uB2E4 (\uC2DC\uB4DC \uC0DD\uC131 + 0600)
   whoami                       \uC0C1\uB300\uC5D0\uAC8C \uBCF4\uB0BC \uACF5\uAC1C\uD0A4\uC640 \uB0B4 \uC9C0\uBB38\uC744 \uBCF4\uC5EC\uC900\uB2E4
-  hook --event <\uC774\uB984>          \uD6C5 \uB7F0\uD0C0\uC784. \uC5D0\uC774\uC804\uD2B8\uAC00 \uBD80\uB978\uB2E4 (\uC9C1\uC811 \uBD80\uB97C \uC77C\uC740 \uC5C6\uB2E4)
+  hook --event <\uC774\uB984> [--agent <claude|codex>]
+                              \uD6C5 \uB7F0\uD0C0\uC784. \uC5D0\uC774\uC804\uD2B8\uAC00 \uBD80\uB978\uB2E4 (\uC9C1\uC811 \uBD80\uB97C \uC77C\uC740 \uC5C6\uB2E4)
   --delivery <push|inbox|both> \uC5B4\uB311\uD130\uB97C \uB744\uC6B4\uB2E4
 
   --config <path>   \uAE30\uBCF8\uAC12 ${DEFAULT_CONFIG_PATH} (\uD658\uACBD\uBCC0\uC218 ACM_CONFIG \uB85C\uB3C4 \uC9C0\uC815)

@@ -165,13 +165,27 @@ describe('게이트', () => {
     expect(read).toBe(0)
   })
 
+  test('Codex 통과는 빈 응답이다 — 지원하지 않는 continue 를 싣지 않는다', async () => {
+    const out = await runGate(store(), payload('Bash'), 'codex')
+    expect(out).toEqual({})
+  })
+
   test('오염 중에 실행 툴을 부르면 deny 가 실린다', async () => {
     await addTaint(dir, [peer()])
     const out = await runGate(store(), payload('Bash'))
     expect(out.hookSpecificOutput?.permissionDecision).toBe('deny')
     expect(out.hookSpecificOutput?.permissionDecisionReason).toBeTruthy()
-    // Codex 0.147 은 이 필드를 만나면 판정을 통째로 버린다.
+    // Claude 호환 출력은 세션을 계속 진행한다.
     expect(out.continue).toBe(true)
+  })
+
+  test('Codex deny 는 지원되는 hookSpecificOutput 만 싣는다', async () => {
+    await addTaint(dir, [peer()])
+    const out = await runGate(store(), payload('Bash'), 'codex')
+    expect(out.hookSpecificOutput?.permissionDecision).toBe('deny')
+    expect(out.hookSpecificOutput?.permissionDecisionReason).toBeTruthy()
+    expect(out.continue).toBeUndefined()
+    expect(out.suppressOutput).toBeUndefined()
   })
 
   test('오염 중에도 읽기 툴은 판정을 싣지 않는다', async () => {
