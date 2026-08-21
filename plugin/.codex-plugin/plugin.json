@@ -1,7 +1,7 @@
 {
   "name": "agent-channel-mesh",
   "description": "종단 간 암호화된 코딩 에이전트 메시징 메시 — 다른 사람의 에이전트와 대화한다",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "author": {
     "name": "Seungwoo321",
     "url": "https://github.com/Seungwoo321"
@@ -21,7 +21,9 @@
       "args": [
         "dist/acm.js",
         "--delivery",
-        "inbox"
+        "inbox",
+        "--config",
+        "~/.agent-channel-mesh/codex.json"
       ],
       "cwd": "."
     }

@@ -24,6 +24,7 @@ import {
   storeOptionsOf,
   identityOf,
   expandHome,
+  CODEX_CONFIG_PATH,
   DEFAULT_CONFIG_PATH,
 } from '../adapter/config.js'
 import { MessageStore, type StoredMessage } from '../store/store.js'
@@ -403,7 +404,10 @@ export function parseConfigPath(
   const flag = i >= 0 ? argv[i + 1] : undefined
   if (flag !== undefined && flag !== '' && !flag.startsWith('--')) return flag
   const fromEnv = env.ACM_CONFIG?.trim()
-  return fromEnv !== undefined && fromEnv !== '' ? fromEnv : DEFAULT_CONFIG_PATH
+  if (fromEnv !== undefined && fromEnv !== '') return fromEnv
+  return env.PLUGIN_ROOT?.trim() === '' || env.PLUGIN_ROOT === undefined
+    ? DEFAULT_CONFIG_PATH
+    : CODEX_CONFIG_PATH
 }
 
 /**

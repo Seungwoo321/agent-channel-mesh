@@ -23,7 +23,7 @@ import {
   HOOK_BATCH_LIMIT,
   HOOK_CONTEXT_LIMIT,
 } from '../src/install/notify.js'
-import { DEFAULT_CONFIG_PATH } from '../src/adapter/config.js'
+import { CODEX_CONFIG_PATH, DEFAULT_CONFIG_PATH } from '../src/adapter/config.js'
 import { readTaint } from '../src/policy/taint.js'
 
 let dir: string
@@ -242,6 +242,10 @@ describe('parseConfigPath (§6.4)', () => {
 
   test('둘 다 없으면 기본 경로', () => {
     expect(parseConfigPath([], {})).toBe(DEFAULT_CONFIG_PATH)
+  })
+
+  test('Codex 플러그인은 Codex 전용 경로를 기본값으로 쓴다', () => {
+    expect(parseConfigPath([], { PLUGIN_ROOT: '/plugin' })).toBe(CODEX_CONFIG_PATH)
   })
 
   test('값이 비었거나 다음 플래그면 못 본 것으로 친다', () => {

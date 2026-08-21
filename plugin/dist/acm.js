@@ -14609,6 +14609,7 @@ function expandHome(path, home = process.env.HOME ?? "") {
 
 // src/adapter/config.ts
 var DEFAULT_CONFIG_PATH = "~/.agent-channel-mesh/config.json";
+var CODEX_CONFIG_PATH = "~/.agent-channel-mesh/codex.json";
 var MAX_MODE = 384;
 function storeOptionsOf(store, identity) {
   const base = store?.dir ?? DEFAULT_STORE_DIR;
@@ -23619,7 +23620,9 @@ function parseConfigPath(argv, env = process.env) {
   if (flag !== undefined && flag !== "" && !flag.startsWith("--"))
     return flag;
   const fromEnv = env.ACM_CONFIG?.trim();
-  return fromEnv !== undefined && fromEnv !== "" ? fromEnv : DEFAULT_CONFIG_PATH;
+  if (fromEnv !== undefined && fromEnv !== "")
+    return fromEnv;
+  return env.PLUGIN_ROOT?.trim() === "" || env.PLUGIN_ROOT === undefined ? DEFAULT_CONFIG_PATH : CODEX_CONFIG_PATH;
 }
 async function hookMain(argv) {
   let agent = process.env.PLUGIN_ROOT?.trim() === "" || process.env.PLUGIN_ROOT === undefined ? "claude" : "codex";

@@ -22,6 +22,9 @@ import { buildPolicy, GRANTS } from '../policy/authority.js'
 /** 기본 설정 위치. `ACM_CONFIG` 로 덮어쓴다. */
 export const DEFAULT_CONFIG_PATH = '~/.agent-channel-mesh/config.json'
 
+/** Codex 플러그인 훅·MCP가 쓰는 설정 위치. Claude 설정과 저장소를 분리한다. */
+export const CODEX_CONFIG_PATH = '~/.agent-channel-mesh/codex.json'
+
 /** 설정 파일의 최대 허용 권한. 그룹·타인에게 한 비트도 열려 있으면 안 된다. */
 const MAX_MODE = 0o600
 

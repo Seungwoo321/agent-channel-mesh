@@ -21,6 +21,7 @@ import {
   CODEX_CONTEXT_LIMIT,
   type HookMap,
 } from './hooks.js'
+import { CODEX_CONFIG_PATH } from '../adapter/config.js'
 
 /** 플러그인·패키지·MCP 서버가 공유하는 이름. */
 export const PACKAGE_NAME = 'agent-channel-mesh'
@@ -102,27 +103,17 @@ export const PLUGIN_RELAY = `${PLUGIN_DIR}/dist/relay.js`
 const BUNDLE_REL = 'dist/acm.js'
 
 /**
- * 훅 명령에서 플러그인 루트를 가리키는 변수. **두 에이전트가 같은 이름을 쓰고,
- * 둘 다 훅 명령에서는 이것을 절대경로로 치환한다**(실측: Codex 는 `hooks/list`
- * 가 치환된 절대경로를 돌려주고, Claude 는 MCP 인자에서 같은 치환을 한다).
- *
- * 훅 **명령에서만** 통한다. MCP 쪽은 {@link pluginMcp} 를 본다.
- */
-const HOOK_ROOT_VAR = '${CLAUDE_PLUGIN_ROOT}'
-
-/**
- * 훅을 띄울 때 쓰는 명령.
- *
- * 버전을 싣지 않는다 — **클론된 ref 가 곧 버전이다.** `bunx <패키지>@<버전>`
- * 이었다면 여기에 버전을 박아야 했고(안 박으면 레지스트리가 바뀌는 것만으로
- * 팀원들의 훅 동작이 갈린다), 그 버전과 마켓플레이스가 준 파일이 어긋날 수
- * 있었다. 번들은 그 문제가 생기지 않는다.
- *
- * 경로를 따옴표로 감싼다 — 훅 명령은 셸을 거치므로 공백이 든 경로가 두 인자로
- * 쪼개진다.
+ * 훅 명령에서 플러그인 루트를 찾는다. Codex는 `PLUGIN_ROOT`, Claude는
+ * `CLAUDE_PLUGIN_ROOT`를 제공하므로 셸에서 런타임별로 선택한다. 둘 다 없는
+ * 직접 실행은 훅을 통과시키되, 에이전트 세션을 깨뜨리지 않는다.
  */
 export function runnerCommand(): string {
-  return `bun "${HOOK_ROOT_VAR}/${BUNDLE_REL}"`
+  return [
+    'if [ -n "${PLUGIN_ROOT:-}" ]; then root="$PLUGIN_ROOT"; agent=codex; config=\'~/.agent-channel-mesh/codex.json\';',
+    'elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then root="$CLAUDE_PLUGIN_ROOT"; agent=claude; config=\'~/.agent-channel-mesh/config.json\';',
+    "else printf '{}'; exit 0; fi;",
+    `exec env ACM_CONFIG="\${ACM_CONFIG:-$config}" bun "$root/${BUNDLE_REL}"`,
+  ].join(' ')
 }
 
 /**
@@ -148,7 +139,7 @@ export function pluginHooks(): { hooks: HookMap } {
         hooks: [
           {
             type: 'command',
-            command: `${runner} hook --event ${e.name}`,
+            command: `${runner} hook --event ${e.name} --agent "$agent"`,
             timeout: CODEX_TIMEOUT_SEC,
             additionalContextLimit: CODEX_CONTEXT_LIMIT,
           },
@@ -185,8 +176,15 @@ export function pluginHooks(): { hooks: HookMap } {
 export function pluginMcp(agent: 'claude' | 'codex'): unknown {
   const server =
     agent === 'claude'
-      ? { command: 'bun', args: [`${HOOK_ROOT_VAR}/${BUNDLE_REL}`, '--delivery', 'both'] }
-      : { command: 'bun', args: [BUNDLE_REL, '--delivery', 'inbox'], cwd: '.' }
+      ? {
+          command: 'bun',
+          args: ['${CLAUDE_PLUGIN_ROOT}/dist/acm.js', '--delivery', 'both'],
+        }
+      : {
+          command: 'bun',
+          args: [BUNDLE_REL, '--delivery', 'inbox', '--config', CODEX_CONFIG_PATH],
+          cwd: '.',
+        }
   return { mcpServers: { [PACKAGE_NAME]: server } }
 }
 
