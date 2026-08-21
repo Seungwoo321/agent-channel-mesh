@@ -38,6 +38,10 @@ export interface Args {
    * 같은 기계의 다른 사용자가 프로세스 목록만으로 가져간다.
    */
   readonly relayToken?: string
+  /** serve 시 첫 릴레이 조회 간격(ms). 환경변수 ACM_POLL_MS 에서 온다. */
+  readonly pollMs?: number
+  /** serve 시 유휴·오류 조회 최대 간격(ms). ACM_POLL_MAX_MS 에서 온다. */
+  readonly pollMaxMs?: number
   /** `init`·`whoami` 에서 쓸 이름. 신뢰의 근거가 아니다 — 근거는 지문뿐이다(§9). */
   readonly label?: string
   /** `hook` 이 그대로 넘길 인자. 훅 런타임이 `--event` 를 읽는다. */
@@ -59,6 +63,9 @@ const USAGE = `agent-channel-mesh
   ACM_RELAY_TOKEN   릴레이 쓰기 토큰 (환경변수). init 이 설정에 옮겨 적는다.
                     플래그가 아닌 이유는 \`ps\` 에 그대로 찍히기 때문이다.
 
+  ACM_POLL_MS       첫 릴레이 조회 간격(ms), 기본 2000
+  ACM_POLL_MAX_MS   유휴·오류 조회 최대 간격(ms), 기본 300000 (5분)
+
   --delivery push    Claude Code — 세션에 능동 주입한다
   --delivery inbox   그 외 에이전트(Codex 등) — 수신함에 쌓고 inbox 툴로 꺼낸다
   --delivery both    주입 + 수신함. Claude Code 에서 기본으로 쓸 형태다 —
@@ -75,6 +82,8 @@ export function parseArgs(argv: readonly string[], env: Record<string, string | 
   let relay: string | undefined
   let label: string | undefined
   const relayToken = env.ACM_RELAY_TOKEN?.trim() || undefined
+  const pollMs = parsePositive(env.ACM_POLL_MS)
+  const pollMaxMs = parsePositive(env.ACM_POLL_MAX_MS)
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!
@@ -98,7 +107,7 @@ export function parseArgs(argv: readonly string[], env: Record<string, string | 
       `--delivery 는 push·inbox·both 중 하나여야 한다 (받은 값: ${delivery ?? '없음'})\n\n${USAGE}`,
     )
   }
-  return { command, delivery, config, relay, relayToken, label }
+  return { command, delivery, config, relay, relayToken, label, pollMs, pollMaxMs }
 }
 
 /**
@@ -167,7 +176,10 @@ export async function main(argv: readonly string[]): Promise<{ stop: () => Promi
   }
 
   const config = await loadConfig(args.config)
-  const { node, identity } = await buildNode(config)
+  const { node, identity } = await buildNode(config, {
+    ...(args.pollMs !== undefined ? { pollMs: args.pollMs } : {}),
+    ...(args.pollMaxMs !== undefined ? { pollMaxMs: args.pollMaxMs } : {}),
+  })
 
   // 지문은 시작할 때 한 번 알린다 — 상대가 대역 외로 대조할 값이다 (§9).
   // 자르지 않고 전부 보여준다. 접두만 보여주면 갈아 맞출 수 있다.
@@ -190,6 +202,13 @@ export async function main(argv: readonly string[]): Promise<{ stop: () => Promi
     store: new MessageStore(storeOptionsOf(config.store, identity)),
     onDropped: d => process.stderr.write(`[agent-channel-mesh] 버림: ${d.reason} — ${d.detail}\n`),
   })
+}
+
+/** 환경변수는 플랫폼에서 흘러올 수 있으므로 잘못된 값은 기본값 경로로 보낸다. */
+function parsePositive(text: string | undefined): number | undefined {
+  if (text === undefined) return undefined
+  const value = Number(text)
+  return Number.isFinite(value) && value > 0 ? value : undefined
 }
 
 // 임포트될 때는 아무 일도 하지 않는다 — 테스트가 parseArgs 만 부를 수 있어야 한다.

@@ -13937,8 +13937,7 @@ function fromBase64(text) {
 
 // src/relay/client.ts
 var DEFAULT_POLL_MS = 2000;
-var MAX_BACKOFF_MS = 60000;
-
+var DEFAULT_POLL_MAX_MS = 5 * 60 * 1000;
 class RelayError extends Error {
   status;
   reason;
@@ -13956,7 +13955,9 @@ class RelayClient {
   keyIdHex;
   postHeaders;
   pollMs;
+  pollMaxMs;
   http;
+  wait;
   stopped = false;
   constructor(options) {
     this.base = options.baseUrl.replace(/\/+$/, "");
@@ -13966,7 +13967,9 @@ class RelayClient {
       "content-type": "application/octet-stream",
       ...options.relayToken ? { [HEADER_POST_AUTH]: `Bearer ${options.relayToken}` } : {}
     };
-    this.pollMs = options.pollMs ?? DEFAULT_POLL_MS;
+    this.pollMs = positive(options.pollMs, DEFAULT_POLL_MS);
+    this.pollMaxMs = Math.max(this.pollMs, positive(options.pollMaxMs, DEFAULT_POLL_MAX_MS));
+    this.wait = options.sleep ?? sleep;
     this.http = options.fetch ?? globalThis.fetch.bind(globalThis);
   }
   async post(wire) {
@@ -14002,22 +14005,27 @@ class RelayClient {
     return body.messages.map((m) => fromBase64(m.envelope));
   }
   async* poll() {
-    let backoff = this.pollMs;
+    let delay = this.pollMs;
     while (!this.stopped) {
       let batch = [];
       try {
         batch = await this.fetchInbox();
-        backoff = this.pollMs;
+        if (batch.length > 0)
+          delay = this.pollMs;
       } catch {
-        backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+        delay = nextPollDelay(delay, this.pollMaxMs);
+        await this.wait(delay);
+        continue;
       }
       for (const wire of batch) {
         if (this.stopped)
           return;
         yield wire;
       }
-      if (batch.length === 0)
-        await sleep(backoff);
+      if (batch.length === 0) {
+        await this.wait(delay);
+        delay = nextPollDelay(delay, this.pollMaxMs);
+      }
     }
   }
   stop() {
@@ -14028,6 +14036,14 @@ class RelayClient {
   }
 }
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function positive(value, fallback) {
+  return value !== undefined && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+function nextPollDelay(currentMs, maxMs = DEFAULT_POLL_MAX_MS) {
+  const current = positive(currentMs, DEFAULT_POLL_MS);
+  const maximum = positive(maxMs, DEFAULT_POLL_MAX_MS);
+  return Math.min(current * 2, maximum);
+}
 function hex6(bytes) {
   let s = "";
   for (const b of bytes)
@@ -14045,7 +14061,7 @@ var LOCK_SUFFIX = ".lock";
 var STALE_LOCK_MS = 1e4;
 var LOCK_TIMEOUT_MS = 5000;
 var FIRST_BACKOFF_MS = 5;
-var MAX_BACKOFF_MS2 = 50;
+var MAX_BACKOFF_MS = 50;
 var LOCK_MODE = 384;
 function lockPathOf(file) {
   return `${file}${LOCK_SUFFIX}`;
@@ -14097,7 +14113,7 @@ async function acquire(path, o) {
       throw new Error(`\uC800\uC7A5\uC18C \uC7A0\uAE08\uC744 ${o.timeoutMs}ms \uC548\uC5D0 \uC7A1\uC9C0 \uBABB\uD588\uB2E4: ${path}. ` + `\uB2E4\uB978 \uD504\uB85C\uC138\uC2A4\uAC00 \uAC19\uC740 \uCC44\uB110\uC744 \uC624\uB798 \uBD99\uB4E4\uACE0 \uC788\uB2E4.`);
     }
     await sleep2(backoff / 2 + Math.random() * (backoff / 2));
-    backoff = Math.min(backoff * 2, MAX_BACKOFF_MS2);
+    backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
   }
 }
 async function release(path, token, warn) {
@@ -14744,12 +14760,14 @@ function validateStore(raw) {
     ...s.maxPerChannel !== undefined ? { maxPerChannel: s.maxPerChannel } : {}
   };
 }
-async function buildNode(config) {
+async function buildNode(config, options = {}) {
   const identity = await identityOf(config);
   const relay = config.relay ? new RelayClient({
     baseUrl: config.relay,
     identity,
-    ...config.relayToken !== undefined ? { relayToken: config.relayToken } : {}
+    ...config.relayToken !== undefined ? { relayToken: config.relayToken } : {},
+    ...options.pollMs !== undefined ? { pollMs: options.pollMs } : {},
+    ...options.pollMaxMs !== undefined ? { pollMaxMs: options.pollMaxMs } : {}
   }) : undefined;
   const self = new Set(config.self ?? []);
   const node = new MeshNode({
@@ -23638,6 +23656,9 @@ var USAGE = `agent-channel-mesh
   ACM_RELAY_TOKEN   \uB9B4\uB808\uC774 \uC4F0\uAE30 \uD1A0\uD070 (\uD658\uACBD\uBCC0\uC218). init \uC774 \uC124\uC815\uC5D0 \uC62E\uACA8 \uC801\uB294\uB2E4.
                     \uD50C\uB798\uADF8\uAC00 \uC544\uB2CC \uC774\uC720\uB294 \`ps\` \uC5D0 \uADF8\uB300\uB85C \uCC0D\uD788\uAE30 \uB54C\uBB38\uC774\uB2E4.
 
+  ACM_POLL_MS       \uCCAB \uB9B4\uB808\uC774 \uC870\uD68C \uAC04\uACA9(ms), \uAE30\uBCF8 2000
+  ACM_POLL_MAX_MS   \uC720\uD734\xB7\uC624\uB958 \uC870\uD68C \uCD5C\uB300 \uAC04\uACA9(ms), \uAE30\uBCF8 300000 (5\uBD84)
+
   --delivery push    Claude Code \u2014 \uC138\uC158\uC5D0 \uB2A5\uB3D9 \uC8FC\uC785\uD55C\uB2E4
   --delivery inbox   \uADF8 \uC678 \uC5D0\uC774\uC804\uD2B8(Codex \uB4F1) \u2014 \uC218\uC2E0\uD568\uC5D0 \uC313\uACE0 inbox \uD234\uB85C \uAEBC\uB0B8\uB2E4
   --delivery both    \uC8FC\uC785 + \uC218\uC2E0\uD568. Claude Code \uC5D0\uC11C \uAE30\uBCF8\uC73C\uB85C \uC4F8 \uD615\uD0DC\uB2E4 \u2014
@@ -23652,6 +23673,8 @@ function parseArgs(argv, env = {}) {
   let relay;
   let label;
   const relayToken = env.ACM_RELAY_TOKEN?.trim() || undefined;
+  const pollMs = parsePositive(env.ACM_POLL_MS);
+  const pollMaxMs = parsePositive(env.ACM_POLL_MAX_MS);
   for (let i = 0;i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "init" || arg === "whoami")
@@ -23678,7 +23701,7 @@ ${USAGE}`);
 
 ${USAGE}`);
   }
-  return { command, delivery, config: config2, relay, relayToken, label };
+  return { command, delivery, config: config2, relay, relayToken, label, pollMs, pollMaxMs };
 }
 async function main(argv) {
   const args = parseArgs(argv, process.env);
@@ -23723,7 +23746,10 @@ async function main(argv) {
     });
   }
   const config2 = await loadConfig(args.config);
-  const { node, identity } = await buildNode(config2);
+  const { node, identity } = await buildNode(config2, {
+    ...args.pollMs !== undefined ? { pollMs: args.pollMs } : {},
+    ...args.pollMaxMs !== undefined ? { pollMaxMs: args.pollMaxMs } : {}
+  });
   process.stderr.write(`[agent-channel-mesh] ${args.delivery} \uBAA8\uB4DC \xB7 \uCC44\uB110 ${node.channelIds().length}\uAC1C
 ` + `[agent-channel-mesh] \uB0B4 \uC9C0\uBB38:
 ${format(identity.fingerprint)}
@@ -23736,6 +23762,12 @@ ${format(identity.fingerprint)}
     onDropped: (d) => process.stderr.write(`[agent-channel-mesh] \uBC84\uB9BC: ${d.reason} \u2014 ${d.detail}
 `)
   });
+}
+function parsePositive(text) {
+  if (text === undefined)
+    return;
+  const value = Number(text);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
 }
 if (import.meta.main) {
   const server = await main(process.argv.slice(2)).catch((e) => {

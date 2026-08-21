@@ -11,7 +11,7 @@ import { Channel } from '../src/channel/channel.js'
 import { MeshNode } from '../src/node/node.js'
 import { MemoryStore } from '../src/relay/store.js'
 import { createHandler } from '../src/relay/http.js'
-import { RelayClient, RelayError } from '../src/relay/client.js'
+import { DEFAULT_POLL_MAX_MS, RelayClient, RelayError, nextPollDelay } from '../src/relay/client.js'
 import { MAX_ENVELOPE_BYTES } from '../src/relay/relay.js'
 import {
   HEADER_KEM,
@@ -161,6 +161,33 @@ describe('릴레이 쓰기 토큰 (§10.13)', () => {
 })
 
 describe('폴링', () => {
+  test('유휴 폴링은 최대 간격까지 지수 백오프한다', async () => {
+    const { fetch } = wired()
+    const waits: number[] = []
+    let client!: RelayClient
+    client = new RelayClient({
+      baseUrl: 'http://relay',
+      identity: bob,
+      pollMs: 2,
+      pollMaxMs: 8,
+      fetch,
+      sleep: async ms => {
+        waits.push(ms)
+        if (waits.length === 4) client.stop()
+      },
+    })
+
+    await client.poll().next()
+    expect(waits).toEqual([2, 4, 8, 8])
+  })
+
+  test('폴링 간격 계산은 기본 상한을 넘지 않는다', () => {
+    expect(nextPollDelay(2, 8)).toBe(4)
+    expect(nextPollDelay(8, 8)).toBe(8)
+    expect(nextPollDelay(1)).toBe(2)
+    expect(DEFAULT_POLL_MAX_MS).toBe(300_000)
+  })
+
   test('도착한 것을 흘려 준다', async () => {
     const { fetch, client } = wired()
     const { nodeA, id } = pair(fetch)

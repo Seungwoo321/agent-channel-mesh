@@ -24,11 +24,21 @@ import { fromBase64, type PostBody, type FetchBody, type ErrorBody } from './htt
 import { fetchAuthHeaders, fetchSigningBytes, newFetchNonce } from './fetch-auth.js'
 import { HEADER_POST_AUTH } from './post-auth.js'
 
-/** 폴링 간격 기본값. 즉시성과 요청 수의 타협점. */
+/** 첫 폴링 간격 기본값. 첫 메시지는 빠르게 확인한다. */
 export const DEFAULT_POLL_MS = 2000
 
-/** 연속 실패 시 최대 백오프. 릴레이가 죽어도 요청을 폭주시키지 않는다. */
-export const MAX_BACKOFF_MS = 60_000
+/**
+ * 유휴 수신함 폴링의 최대 간격.
+ *
+ * 빈 수신함을 계속 2초마다 조회하면 메시지가 없어도 Upstash 명령을 쓴다.
+ * 2초에서 시작해 이 값까지 지수 백오프하면 유휴 프로세스 하나의 조회는
+ * 한 달 약 8,640회(30일 기준)로 묶인다. 실제 전달은 훅·inbox가 맡고, 이
+ * 폴링은 그 안전망이므로 유휴 상태에서 5분 지연을 허용한다.
+ */
+export const DEFAULT_POLL_MAX_MS = 5 * 60 * 1000
+
+/** 연속 실패 시에도 같은 비용 상한을 쓴다. 릴레이가 죽어도 요청을 폭주시키지 않는다. */
+export const MAX_BACKOFF_MS = DEFAULT_POLL_MAX_MS
 
 export interface ClientOptions {
   /** 릴레이 기준 URL. 예: `https://relay.example.com` */
@@ -46,9 +56,13 @@ export interface ClientOptions {
    * 선택 항목인 이유는 루프백 릴레이가 인증 없이 뜨기 때문이다 — 로컬 개발에
    * 토큰을 강요하지 않는다. 필요한데 없으면 릴레이가 401 로 답하고, `post()`
    * 가 그 사실을 그대로 던진다. 조용히 실패하지 않는다.
-   */
+  */
   readonly relayToken?: string
   readonly pollMs?: number
+  /** 빈 수신함·연속 실패 때 올라갈 최대 폴링 간격. */
+  readonly pollMaxMs?: number
+  /** 테스트에서 시간 흐름을 주입한다. 기본은 전역 타이머다. */
+  readonly sleep?: (ms: number) => Promise<void>
   /** 테스트·서버리스에서 주입한다. 기본은 전역 `fetch`. */
   readonly fetch?: typeof globalThis.fetch
 }
@@ -75,7 +89,9 @@ export class RelayClient {
   private readonly keyIdHex: string
   private readonly postHeaders: Record<string, string>
   private readonly pollMs: number
+  private readonly pollMaxMs: number
   private readonly http: typeof globalThis.fetch
+  private readonly wait: (ms: number) => Promise<void>
   private stopped = false
 
   constructor(options: ClientOptions) {
@@ -86,7 +102,9 @@ export class RelayClient {
       'content-type': 'application/octet-stream',
       ...(options.relayToken ? { [HEADER_POST_AUTH]: `Bearer ${options.relayToken}` } : {}),
     }
-    this.pollMs = options.pollMs ?? DEFAULT_POLL_MS
+    this.pollMs = positive(options.pollMs, DEFAULT_POLL_MS)
+    this.pollMaxMs = Math.max(this.pollMs, positive(options.pollMaxMs, DEFAULT_POLL_MAX_MS))
+    this.wait = options.sleep ?? sleep
     this.http = options.fetch ?? globalThis.fetch.bind(globalThis)
   }
 
@@ -143,21 +161,30 @@ export class RelayClient {
    * 곧 서비스 거부다 — 나쁜 봉투를 보내는 것은 누구나 할 수 있다.
    */
   async *poll(): AsyncGenerator<Uint8Array, void, void> {
-    let backoff = this.pollMs
+    let delay = this.pollMs
     while (!this.stopped) {
       let batch: Uint8Array[] = []
       try {
         batch = await this.fetchInbox()
-        backoff = this.pollMs
+        // 메시지가 실제로 왔으면 다음 빈 조회는 다시 빠르게 시작한다.
+        if (batch.length > 0) delay = this.pollMs
       } catch {
-        backoff = Math.min(backoff * 2, MAX_BACKOFF_MS)
+        // 오류도 빈 응답과 같은 비용 상한 안에 둔다. 계속 401/5xx를 두드리는
+        // 것은 장애를 복구하지 못하면서 릴레이 비용만 늘리는 재시도 폭주다.
+        delay = nextPollDelay(delay, this.pollMaxMs)
+        await this.wait(delay)
+        continue
       }
       for (const wire of batch) {
         if (this.stopped) return
         yield wire
       }
       // 받은 것이 있으면 곧바로 다시 조회한다 — 밀린 큐를 비우는 중일 수 있다.
-      if (batch.length === 0) await sleep(backoff)
+      // 빈 응답은 성공이어도 비용이 든다. 다음 조회 전까지 지수 백오프한다.
+      if (batch.length === 0) {
+        await this.wait(delay)
+        delay = nextPollDelay(delay, this.pollMaxMs)
+      }
     }
   }
 
@@ -172,6 +199,18 @@ export class RelayClient {
 }
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
+
+/** 유효하지 않은 선택값은 안전한 기본값으로 되돌린다. */
+function positive(value: number | undefined, fallback: number): number {
+  return value !== undefined && Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+/** 현재 간격을 두 배로 늘리되 설정된 비용 상한을 넘지 않는다. */
+export function nextPollDelay(currentMs: number, maxMs = DEFAULT_POLL_MAX_MS): number {
+  const current = positive(currentMs, DEFAULT_POLL_MS)
+  const maximum = positive(maxMs, DEFAULT_POLL_MAX_MS)
+  return Math.min(current * 2, maximum)
+}
 
 function hex(bytes: Uint8Array): string {
   let s = ''

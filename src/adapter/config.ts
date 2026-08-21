@@ -25,6 +25,13 @@ export const DEFAULT_CONFIG_PATH = '~/.agent-channel-mesh/config.json'
 /** 설정 파일의 최대 허용 권한. 그룹·타인에게 한 비트도 열려 있으면 안 된다. */
 const MAX_MODE = 0o600
 
+export interface BuildNodeOptions {
+  /** 첫 수신함 조회 간격(ms). 생략하면 릴레이 클라이언트 기본값을 쓴다. */
+  readonly pollMs?: number
+  /** 유휴·오류 조회의 최대 간격(ms). 생략하면 비용 보호 기본값을 쓴다. */
+  readonly pollMaxMs?: number
+}
+
 export interface MemberConfig {
   /** 사람이 부르는 이름. 신뢰의 근거가 아니다 — 근거는 지문뿐이다 (§9). */
   readonly label?: string
@@ -364,13 +371,18 @@ function validateStore(raw: unknown): StoreConfig | undefined {
  * 어댑터가 아니라 여기서 조립하는 이유는 §4 그대로다 — 조립 순서를
  * 어댑터마다 다시 쓰면 에이전트에 따라 정책이 갈린다.
  */
-export async function buildNode(config: Config): Promise<{ node: MeshNode; identity: Identity }> {
+export async function buildNode(
+  config: Config,
+  options: BuildNodeOptions = {},
+): Promise<{ node: MeshNode; identity: Identity }> {
   const identity = await identityOf(config)
   const relay = config.relay
     ? new RelayClient({
         baseUrl: config.relay,
         identity,
         ...(config.relayToken !== undefined ? { relayToken: config.relayToken } : {}),
+        ...(options.pollMs !== undefined ? { pollMs: options.pollMs } : {}),
+        ...(options.pollMaxMs !== undefined ? { pollMaxMs: options.pollMaxMs } : {}),
       })
     : undefined
   const self = new Set(config.self ?? [])

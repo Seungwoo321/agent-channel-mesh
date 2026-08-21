@@ -60,6 +60,21 @@ codex plugin add agent-channel-mesh@agent-channel-mesh
 [다른 사람과](https://agent-channel-mesh-docs.vercel.app/guides/other-people/) ·
 [안 될 때](https://agent-channel-mesh-docs.vercel.app/guides/troubleshooting/).
 
+## 릴레이 사용량과 무료 한도
+
+배포 릴레이가 Upstash를 저장소로 쓰면 **빈 수신함 조회도 명령어 사용량에 포함된다.** Upstash Free 요금제의 현재 한도는 월 500,000 commands다 — 최신 기준은 [Upstash 요금표](https://upstash.com/pricing/redis)에서 확인한다.
+
+어댑터는 유휴 상태에서 폴링 간격을 기본 2초에서 시작해 지수적으로 늘리고, 기본 최대 5분에서 멈춘다. 유휴 어댑터 하나의 최대 조회량은 30일 기준 약 8,640회이며, 실행 중인 Claude·Codex 세션 수만큼 합산된다. 릴레이는 서버 푸시를 하지 않으므로 유휴 상태에서 도착한 메시지는 다음 폴링 때 발견되며, 최악의 지연은 최대 간격과 같다. 메시지를 발견하면 간격을 다시 줄인다.
+
+필요한 경우 `serve` 프로세스의 환경변수로 조정한다.
+
+```bash
+ACM_POLL_MS=2000       # 첫 폴링 간격(기본값)
+ACM_POLL_MAX_MS=300000 # 유휴·오류 시 최대 간격 5분(기본값)
+```
+
+플러그인을 업데이트해도 이미 실행 중인 MCP 프로세스는 자동으로 바뀌지 않는다. 릴레이 사용량 보호가 적용된 버전을 설치한 뒤 Claude와 Codex 세션을 재시작한다. 오래된 세션이나 고아 프로세스를 남겨 두면 이전 폴링 정책이 계속 사용량을 만든다.
+
 ## 도착한 말의 권한
 
 채널 멤버는 서로 **동료**다. 위아래가 없고, 도착한 말은 지시가 아니라 **공유**다. 그래서

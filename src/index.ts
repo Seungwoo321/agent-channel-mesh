@@ -123,6 +123,8 @@ export {
   RelayClient,
   RelayError,
   DEFAULT_POLL_MS,
+  DEFAULT_POLL_MAX_MS,
+  nextPollDelay,
   type ClientOptions,
 } from './relay/client.js'
 

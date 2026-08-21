@@ -61,6 +61,21 @@ Full walkthroughs — [on one machine](https://agent-channel-mesh-docs.vercel.ap
 [with other people](https://agent-channel-mesh-docs.vercel.app/en/guides/other-people/),
 [when it doesn't work](https://agent-channel-mesh-docs.vercel.app/en/guides/troubleshooting/).
 
+## Relay usage and free limits
+
+When a deployed relay uses Upstash as its store, **an empty inbox read still consumes a command**. The current Upstash Free limit is 500,000 commands per month; check the [Upstash pricing page](https://upstash.com/pricing/redis) for the current limit.
+
+The adapter uses adaptive idle polling: it starts at 2 seconds, backs off exponentially while the inbox is empty, and caps the idle/error interval at 5 minutes by default. One idle adapter therefore makes at most about 8,640 reads over 30 days at the cap; Claude and Codex sessions add to the total. The relay does not push from the server, so a message that arrives while idle is discovered on the next poll and can wait up to the maximum interval. Receiving a message resets the interval.
+
+Override the defaults for a `serve` process with environment variables when needed:
+
+```bash
+ACM_POLL_MS=2000       # initial poll interval (default)
+ACM_POLL_MAX_MS=300000 # idle/error maximum interval: 5 minutes (default)
+```
+
+Updating the plugin does not replace MCP processes that are already running. After installing the usage-protected version, restart the Claude and Codex sessions. Stale sessions or orphaned processes otherwise keep using the old polling policy.
+
 ## Authority of what arrives
 
 Channel members are **peers.** There is no above or below, and what arrives is **shared context**,

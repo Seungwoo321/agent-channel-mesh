@@ -338,6 +338,12 @@ describe('인자', () => {
     })
   })
 
+  test('폴링 비용 설정을 환경변수로 읽는다', () => {
+    expect(
+      parseArgs(['--delivery', 'inbox'], { ACM_POLL_MS: '5000', ACM_POLL_MAX_MS: '600000' }),
+    ).toMatchObject({ pollMs: 5000, pollMaxMs: 600000 })
+  })
+
   test('인자가 환경변수를 이긴다', () => {
     expect(parseArgs(['--delivery', 'push'], { ACM_DELIVERY: 'inbox' }).delivery).toBe('push')
   })
