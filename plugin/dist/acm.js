@@ -23174,10 +23174,19 @@ async function runRelayExport(args) {
 
 ` + `  cd ${dir}
 ` + `  vercel link
-` + `  vercel integration add upstash        # \uC800\uC7A5\uC18C. \uC11C\uBC84\uB9AC\uC2A4\uC5D0\uC11C \uBA54\uBAA8\uB9AC\uB85C\uB294 \uB728\uC9C0 \uC54A\uB294\uB2E4
+` + `  vercel env add ACM_RELAY_STORE production # \uAC12\uC744 turso \uB610\uB294 upstash \uC911 \uD558\uB098\uB85C \uC785\uB825
+` + `  # Turso\uB97C \uACE0\uB974\uB294 \uACBD\uC6B0\uC5D0\uB9CC:
+` + `  turso db create <database-name>
+` + `  turso db show <database-name> --url
+` + `  turso db tokens create <database-name>
+` + `  vercel env add TURSO_DATABASE_URL production
+` + `  vercel env add TURSO_AUTH_TOKEN production
+` + `  # Upstash\uB97C \uACE0\uB974\uB294 \uACBD\uC6B0\uC5D0\uB9CC:
+` + `  vercel integration add upstash
+` + `  # \uC544\uB798 \uB450 \uAC12\uC740 Turso\xB7Upstash \uACF5\uD1B5:
 ` + `  openssl rand -hex 32                  # \uC4F0\uAE30 \uD1A0\uD070\uC744 \uB9CC\uB4E0\uB2E4
 ` + `  vercel env add ACM_RELAY_TOKEN production
-` + `  vercel env add CRON_SECRET production # keepalive cron \uC778\uC99D. \uC5C6\uC73C\uBA74 30\uC77C \uB4A4 \uC544\uCE74\uC774\uBE0C\uB41C\uB2E4
+` + `  vercel env add CRON_SECRET production # keepalive cron \uC778\uC99D
 ` + `  vercel deploy --prod
 
 ` + `\uB72C \uB4A4 relay_check \uC5D0 \uADF8 \uC8FC\uC18C\uB97C \uC918\uC11C \uB9B4\uB808\uC774\uB85C \uB2F5\uD558\uB294\uC9C0 \uD655\uC778\uD55C\uB2E4.

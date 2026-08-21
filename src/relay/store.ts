@@ -7,7 +7,7 @@
  * 다만 오프라인 전달을 위해 암호화된 blob 을 TTL 저장소에 보관한다.
  * 그 내용은 읽을 수 없다.
  *
- * 인터페이스를 따로 두는 이유: Vercel KV·Upstash·메모리 중 어느 것을
+ * 인터페이스를 따로 두는 이유: 메모리·Turso·Upstash 중 어느 것을
  * 쓰든 릴레이 로직이 같아야 한다. 벤더를 릴레이에 용접하면 테스트에
  * 실제 인프라가 필요해지고, 그러면 릴레이 로직이 검증되지 않는다.
  */
@@ -58,7 +58,8 @@ export interface MemoryStoreOptions {
  * 메모리 저장소.
  *
  * 로컬 개발·테스트용이다. 서버리스 배포에서는 인스턴스마다 별도
- * 메모리를 갖게 되므로 **운영에 쓰면 안 된다** — 그때는 KV 어댑터를 쓴다.
+ * 메모리를 갖게 되므로 **운영에 쓰면 안 된다** — 그때는 내구성 저장소
+ * 어댑터를 쓴다.
  */
 export class MemoryStore implements Store {
   private readonly queues = new Map<string, Stored[]>()

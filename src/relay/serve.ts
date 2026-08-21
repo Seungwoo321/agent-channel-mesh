@@ -7,10 +7,10 @@
  * `Bun.serve()` 에 넘기는 것뿐이다. 서버리스 배포도 같은 핸들러를 쓴다 —
  * 라우팅이나 검증을 여기서 다시 만들면 두 경로의 동작이 갈린다.
  *
- * `start()` 의 **저장소가 메모리다.** 프로세스가 죽으면 대기 중인 봉투가
- * 사라진다. 로컬 개발과 신뢰하는 소규모 자체 호스팅까지가 그 범위이며,
- * 서버리스에 올릴 때는 인스턴스마다 메모리가 갈리므로 반드시 외부
- * 저장소를 쓴다(`MemoryStore` 주석 · §10.7). 진입점이 그 선택을 한다.
+ * 저장소 선택은 `src/server.ts` 의 `selectStore()` 가 맡는다. 메모리 저장소를
+ * 고르면 프로세스가 죽을 때 대기 중인 봉투가 사라지고, Turso·Upstash를
+ * 고르면 프로세스 밖에 남는다. 서버리스에서는 인스턴스마다 메모리가 갈리므로
+ * `selectStore()` 가 내구성 저장소를 강제한다(`MemoryStore` 주석 · §10.7).
  */
 import { createHandler } from './http.js'
 import { MemoryStore, DEFAULT_TTL_MS, DEFAULT_MAX_QUEUE } from './store.js'
@@ -44,6 +44,9 @@ const USAGE = `agent-channel-mesh 릴레이
   --host <addr>    기본 127.0.0.1 (외부 공개는 0.0.0.0)
   --ttl <ms>       봉투 보관 기간, 기본 ${DEFAULT_TTL_MS} (7일)
   --max-queue <n>  수신자당 큐 상한, 기본 ${DEFAULT_MAX_QUEUE}
+
+  ACM_RELAY_STORE  memory(local)·turso·upstash 중 저장소를 선택한다.
+                   로컬 기본값은 memory 다. 서버리스에서는 memory 를 쓸 수 없다.
 
   ACM_RELAY_TOKEN  쓰기 토큰 (환경변수, 최소 ${MIN_TOKEN_CHARS}자 — \`openssl rand -hex 32\`).
                    루프백 밖으로 열려면 반드시 있어야 한다 (§10.13).

@@ -33,7 +33,7 @@ function boot(): ReturnType<typeof Bun.serve> {
   // 아니라 런타임이 어떻게 실행하느냐의 부산물이므로, 예상 못 한 인자 하나가
   // `모르는 인자` 로 함수를 통째로 못 뜨게 만들 수 있다. 거기서는 환경변수만 읽는다.
   const args = parseArgs(serverless ? [] : process.argv.slice(2), process.env)
-  const { store, durable } = selectStore(process.env, args)
+  const { store, durable, provider } = selectStore(process.env, args)
   const postAuth = selectPostAuth(process.env, { serverless, host: args.host })
   const handler = createHandler({ store, postAuth })
 
@@ -47,10 +47,8 @@ function boot(): ReturnType<typeof Bun.serve> {
       // cron 전용 경로만 여기서 가른다. 나머지는 전부 같은 핸들러가 받는다.
       const path = new URL(req.url).pathname.replace(/\/+$/, '')
       // 메모리 저장소 위에서는 이 경로를 아예 만들지 않는다. keepalive 는
-      // Redis 를 건드려 아카이브 타이머를 리셋하는 것이 전부인데, 메모리
-      // 저장소에서는 아무 데도 닿지 않으면서 `ok:true` 를 돌려주기 때문이다 —
-      // cron 은 성공을 보고, 아카이브는 그대로 진행된다. 할 수 없는 일을
-      // 성공으로 답하느니 존재하지 않는 편이 낫다(`createHandler` 가 404 로 답한다).
+      // 외부 저장소에 연결해 확인하는 경로라 메모리에서는 성공해도 확인할
+      // 대상이 없다 — 할 수 없는 일을 성공으로 답하느니 404 가 낫다.
       if (durable && path === '/keepalive') return keepalive(req, store)
       return handler(req)
     },
@@ -71,9 +69,9 @@ function boot(): ReturnType<typeof Bun.serve> {
     process.stdout.write(
       `릴레이가 떴다: http://${args.host}:${server.port}\n` +
         `  설정의 relay 에 이 주소를 넣는다.\n\n` +
-        (durable
-          ? `저장소는 Upstash 다.\n`
-          : `저장소는 메모리다 — 이 프로세스가 죽으면 대기 중인 봉투가 사라진다.\n`) +
+        (provider === 'memory'
+          ? `저장소는 메모리다 — 이 프로세스가 죽으면 대기 중인 봉투가 사라진다.\n`
+          : `저장소는 ${provider === 'turso' ? 'Turso' : 'Upstash'} 다 — 배달되거나 TTL 이 지나면 큐에서 사라진다.\n`) +
         ('open' in postAuth
           ? `쓰기는 인증하지 않는다 — 이 기계에서만 닿을 수 있어서다.\n` +
             `외부에 열려면 ACM_RELAY_TOKEN 을 만들고 --host 0.0.0.0 을 준다.\n`

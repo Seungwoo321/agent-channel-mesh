@@ -20,6 +20,36 @@
 
 릴레이 실행 파일은 플러그인 안에 함께 들어 있다. 어느 쪽이든 **이 레포를 클론하지 않는다.**
 
+## 저장소 선택
+
+릴레이 위치(로컬·배포됨)와 큐 저장소는 별개의 선택이다. 로컬 릴레이는 기본으로 메모리를 쓰고,
+배포 릴레이는 프로세스 밖의 저장소를 써야 한다.
+
+| 값 | 저장소 | 용도 |
+|---|---|---|
+| `ACM_RELAY_STORE=memory` 또는 `local` | 프로세스 메모리 | 같은 기계의 Claude ↔ Codex 테스트 |
+| `ACM_RELAY_STORE=turso` | Turso Cloud | Vercel 등 서버리스의 기본 권장 선택 |
+| `ACM_RELAY_STORE=upstash` | Upstash Redis | 기존 Vercel·Upstash 배포와의 호환 |
+
+Turso를 쓰는 배포 릴레이에는 `TURSO_DATABASE_URL`과 `TURSO_AUTH_TOKEN`을 함께 넣는다.
+Upstash를 쓰는 경우에는 `UPSTASH_REDIS_REST_URL`과 `UPSTASH_REDIS_REST_TOKEN`을 넣는다.
+두 저장소의 자격증명이 동시에 있으면 `ACM_RELAY_STORE`를 반드시 지정한다. 지정하지 않아도
+완전한 자격증명이 하나뿐이면 기존 배포와의 호환을 위해 자동 선택한다.
+
+이 저장소는 대화 기록 보관소가 아니다. 릴레이는 암호화된 봉투를 수신자가 가져갈 때까지
+잠시 보관하고, 성공적인 `fetch`에서 삭제한다. 기본 TTL은 7일이고, 수신자별 큐 상한은
+1,000개다. Turso를 선택해도 이 삭제·만료 계약은 같다.
+
+로컬 테스트:
+
+```bash
+ACM_RELAY_STORE=memory bun run src/server.ts --port 8787
+```
+
+배포 릴레이에서 `memory`를 선택하면 서버리스 인스턴스 사이에서 봉투가 사라질 수 있으므로
+기동을 거부한다. Turso의 계정·CLI 절차는 [Turso TypeScript quickstart](https://docs.turso.tech/sdk/ts/quickstart),
+Upstash의 현재 한도는 [Upstash 요금표](https://upstash.com/pricing/redis)에서 확인한다.
+
 ## 설치
 
 필요한 것은 [Bun](https://bun.sh) 하나다. 이 레포가 곧 마켓플레이스다.
@@ -63,6 +93,8 @@ codex plugin add agent-channel-mesh@agent-channel-mesh
 ## 릴레이 사용량과 무료 한도
 
 배포 릴레이가 Upstash를 저장소로 쓰면 **빈 수신함 조회도 명령어 사용량에 포함된다.** Upstash Free 요금제의 현재 한도는 월 500,000 commands다 — 최신 기준은 [Upstash 요금표](https://upstash.com/pricing/redis)에서 확인한다.
+
+Turso를 쓰면 이 Upstash 명령어 한도는 적용되지 않는다. 다만 Turso의 무료 플랜에는 별도의 읽기·쓰기·저장량 한도가 있으므로 현재 요금표를 확인한다.
 
 어댑터는 유휴 상태에서 폴링 간격을 기본 2초에서 시작해 지수적으로 늘리고, 기본 최대 5분에서 멈춘다. 유휴 어댑터 하나의 최대 조회량은 30일 기준 약 8,640회이며, 실행 중인 Claude·Codex 세션 수만큼 합산된다. 릴레이는 서버 푸시를 하지 않으므로 유휴 상태에서 도착한 메시지는 다음 폴링 때 발견되며, 최악의 지연은 최대 간격과 같다. 메시지를 발견하면 간격을 다시 줄인다.
 

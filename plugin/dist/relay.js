@@ -2655,15 +2655,1449 @@ function credentials(env) {
   };
 }
 
+// node_modules/@tursodatabase/serverless/dist/index.js
+var AsyncLock = class {
+  constructor() {
+    this.locked = false;
+    this.queue = [];
+  }
+  async acquire() {
+    if (!this.locked) {
+      this.locked = true;
+      return;
+    }
+    return new Promise((resolve) => {
+      this.queue.push(resolve);
+    });
+  }
+  release() {
+    const next = this.queue.shift();
+    if (next) {
+      next();
+    } else {
+      this.locked = false;
+    }
+  }
+};
+var DatabaseError = class _DatabaseError extends Error {
+  constructor(message, code, rawCode, cause) {
+    super(message);
+    this.name = "DatabaseError";
+    this.code = code;
+    this.rawCode = rawCode;
+    this.cause = cause;
+    Object.setPrototypeOf(this, _DatabaseError.prototype);
+  }
+};
+var TimeoutError = class _TimeoutError extends DatabaseError {
+  constructor(message = "Query timed out", cause) {
+    super(message, "TIMEOUT", undefined, cause);
+    this.name = "TimeoutError";
+    Object.setPrototypeOf(this, _TimeoutError.prototype);
+  }
+};
+function toBase64(uint8) {
+  return Buffer.from(uint8.buffer, uint8.byteOffset, uint8.byteLength).toString("base64");
+}
+function encodeValue(value) {
+  if (value === null || value === undefined) {
+    return { type: "null" };
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      throw new Error("Only finite numbers (not Infinity or NaN) can be passed as arguments");
+    }
+    if (Number.isSafeInteger(value)) {
+      return { type: "integer", value: value.toString() };
+    }
+    return { type: "float", value };
+  }
+  if (typeof value === "bigint") {
+    return { type: "integer", value: value.toString() };
+  }
+  if (typeof value === "boolean") {
+    return { type: "integer", value: value ? "1" : "0" };
+  }
+  if (typeof value === "string") {
+    return { type: "text", value };
+  }
+  if (value instanceof ArrayBuffer) {
+    return { type: "blob", base64: toBase64(new Uint8Array(value)) };
+  }
+  if (value instanceof Uint8Array) {
+    return { type: "blob", base64: toBase64(value) };
+  }
+  return { type: "text", value: String(value) };
+}
+function decodeValue(value, safeIntegers = false) {
+  switch (value.type) {
+    case "null":
+      return null;
+    case "integer":
+      if (safeIntegers) {
+        return BigInt(value.value);
+      }
+      return parseInt(value.value, 10);
+    case "float":
+      return value.value;
+    case "text":
+      return value.value;
+    case "blob":
+      if (value.base64 !== undefined && value.base64 !== null) {
+        let b64 = value.base64;
+        while (b64.length % 4 !== 0) {
+          b64 += "=";
+        }
+        const binaryString = atob(b64);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0;i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return Buffer.from(bytes);
+      }
+      return Buffer.alloc(0);
+    default:
+      return null;
+  }
+}
+var ENCRYPTION_KEY_HEADER = "x-turso-encryption-key";
+function buildHeaders(ctx) {
+  const headers = {
+    "Content-Type": "application/json"
+  };
+  if (ctx.authToken) {
+    headers["Authorization"] = `Bearer ${ctx.authToken}`;
+  }
+  if (ctx.remoteEncryptionKey) {
+    headers[ENCRYPTION_KEY_HEADER] = ctx.remoteEncryptionKey;
+  }
+  for (const [name, value] of Object.entries(ctx.requestHeaders ?? {})) {
+    if (name.toLowerCase() === "host") {
+      throw new DatabaseError("overwriting the 'Host' header is not supported");
+    }
+    headers[name] = value;
+  }
+  return headers;
+}
+function buildFetchOptions(ctx, body, signal) {
+  return {
+    method: "POST",
+    headers: buildHeaders(ctx),
+    body,
+    signal
+  };
+}
+function wrapAbortError(error) {
+  if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) {
+    throw new TimeoutError("Query timed out");
+  }
+  throw error;
+}
+async function executeCursor(ctx, request, signal) {
+  let response;
+  try {
+    response = await fetch(`${ctx.url}/v3/cursor`, buildFetchOptions(ctx, JSON.stringify(request), signal));
+  } catch (error) {
+    wrapAbortError(error);
+  }
+  if (!response.ok) {
+    let errorMessage = `HTTP error! status: ${response.status}`;
+    try {
+      const errorBody = await response.text();
+      const errorData = JSON.parse(errorBody);
+      if (errorData.message) {
+        errorMessage = errorData.message;
+      }
+    } catch {}
+    throw new DatabaseError(errorMessage);
+  }
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new DatabaseError("No response body");
+  }
+  const decoder = new TextDecoder;
+  let buffer = "";
+  let cursorResponse;
+  try {
+    while (!cursorResponse) {
+      const { done, value } = await reader.read();
+      if (done)
+        break;
+      buffer += decoder.decode(value, { stream: true });
+      const newlineIndex = buffer.indexOf(`
+`);
+      if (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line) {
+          cursorResponse = JSON.parse(line);
+          break;
+        }
+      }
+    }
+  } catch (error) {
+    reader.releaseLock();
+    wrapAbortError(error);
+  }
+  if (!cursorResponse) {
+    reader.releaseLock();
+    throw new DatabaseError("No cursor response received");
+  }
+  async function* parseEntries() {
+    try {
+      let newlineIndex;
+      while ((newlineIndex = buffer.indexOf(`
+`)) !== -1) {
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line) {
+          yield JSON.parse(line);
+        }
+      }
+      while (true) {
+        let readResult;
+        try {
+          readResult = await reader.read();
+        } catch (error) {
+          wrapAbortError(error);
+        }
+        if (readResult.done)
+          break;
+        buffer += decoder.decode(readResult.value, { stream: true });
+        while ((newlineIndex = buffer.indexOf(`
+`)) !== -1) {
+          const line = buffer.slice(0, newlineIndex).trim();
+          buffer = buffer.slice(newlineIndex + 1);
+          if (line) {
+            yield JSON.parse(line);
+          }
+        }
+      }
+      if (buffer.trim()) {
+        yield JSON.parse(buffer.trim());
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  }
+  return { response: cursorResponse, entries: parseEntries() };
+}
+async function executePipeline(ctx, request, signal) {
+  let response;
+  try {
+    response = await fetch(`${ctx.url}/v3/pipeline`, buildFetchOptions(ctx, JSON.stringify(request), signal));
+  } catch (error) {
+    wrapAbortError(error);
+  }
+  if (!response.ok) {
+    throw new DatabaseError(`HTTP error! status: ${response.status}`);
+  }
+  return response.json();
+}
+function normalizeArgs(args) {
+  if (args === undefined)
+    return [];
+  if (Array.isArray(args))
+    return args;
+  if (args !== null && typeof args === "object" && args.constructor === Object) {
+    return args;
+  }
+  return [args];
+}
+function isQueryOptions(value) {
+  return value != null && typeof value === "object" && !Array.isArray(value) && (Object.prototype.hasOwnProperty.call(value, "queryTimeout") || Object.prototype.hasOwnProperty.call(value, "requestHeaders"));
+}
+function splitBindParameters(bindParameters) {
+  if (bindParameters.length === 0) {
+    return { params: undefined, queryOptions: undefined };
+  }
+  if (isQueryOptions(bindParameters[bindParameters.length - 1])) {
+    if (bindParameters.length === 1) {
+      return { params: undefined, queryOptions: bindParameters[0] };
+    }
+    return {
+      params: bindParameters.length === 2 ? bindParameters[0] : bindParameters.slice(0, -1),
+      queryOptions: bindParameters[bindParameters.length - 1]
+    };
+  }
+  return {
+    params: bindParameters.length === 1 ? bindParameters[0] : bindParameters,
+    queryOptions: undefined
+  };
+}
+function encodeSqlArgs(args = []) {
+  let positionalArgs = [];
+  let namedArgs = [];
+  if (Array.isArray(args)) {
+    positionalArgs = args.map(encodeValue);
+  } else {
+    const keys = Object.keys(args);
+    const isNumericKeys = keys.length > 0 && keys.every((key) => /^\d+$/.test(key));
+    if (isNumericKeys) {
+      const sortedKeys = keys.sort((a, b) => parseInt(a, 10) - parseInt(b, 10));
+      const maxIndex = parseInt(sortedKeys[sortedKeys.length - 1], 10);
+      positionalArgs = new Array(maxIndex);
+      for (const key of sortedKeys) {
+        const index = parseInt(key, 10) - 1;
+        positionalArgs[index] = encodeValue(args[key]);
+      }
+      for (let i = 0;i < positionalArgs.length; i++) {
+        if (positionalArgs[i] === undefined) {
+          positionalArgs[i] = { type: "null" };
+        }
+      }
+    } else {
+      namedArgs = Object.entries(args).map(([name, value]) => ({
+        name,
+        value: encodeValue(value)
+      }));
+    }
+  }
+  return { args: positionalArgs, namedArgs };
+}
+function normalizeBatchMode(mode) {
+  switch (String(mode).toLowerCase()) {
+    case "write":
+      return "IMMEDIATE";
+    case "read":
+    case "deferred":
+      return "DEFERRED";
+    case "immediate":
+      return "IMMEDIATE";
+    case "exclusive":
+      return "EXCLUSIVE";
+    case "concurrent":
+      return "CONCURRENT";
+    default:
+      return String(mode).toUpperCase();
+  }
+}
+function normalizeUrl(url) {
+  return url.replace(/^(libsql|turso):\/\//, "https://").replace(/\/+$/, "");
+}
+function isValidIdentifier(str) {
+  return /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(str);
+}
+var Session = class _Session {
+  constructor(config) {
+    this.baton = null;
+    this.autocommit = true;
+    for (const name of Object.keys(config.requestHeaders ?? {})) {
+      if (name.toLowerCase() === "host") {
+        throw new DatabaseError("overwriting the 'Host' header is not supported");
+      }
+    }
+    this.config = config;
+    this.baseUrl = normalizeUrl(config.url);
+  }
+  httpContext(queryOptions) {
+    let requestHeaders = this.config.requestHeaders;
+    if (queryOptions?.requestHeaders) {
+      requestHeaders = { ...requestHeaders, ...queryOptions.requestHeaders };
+    }
+    return {
+      url: this.baseUrl,
+      authToken: this.config.authToken,
+      remoteEncryptionKey: this.config.remoteEncryptionKey,
+      requestHeaders
+    };
+  }
+  get inTransaction() {
+    return !this.autocommit;
+  }
+  updateAutocommit(response) {
+    if (!response.results) {
+      return;
+    }
+    for (const result of response.results) {
+      if (result.type === "ok" && result.response?.type === "get_autocommit" && typeof result.response.is_autocommit === "boolean") {
+        this.autocommit = result.response.is_autocommit;
+        return;
+      }
+    }
+  }
+  createAbortSignal(queryOptions) {
+    const timeout = queryOptions?.queryTimeout ?? this.config.defaultQueryTimeout;
+    if (timeout != null && timeout > 0) {
+      return AbortSignal.timeout(timeout);
+    }
+    return;
+  }
+  async describe(sql, queryOptions) {
+    const request = {
+      baton: this.baton,
+      requests: [
+        { type: "describe", sql },
+        { type: "get_autocommit" }
+      ]
+    };
+    let response;
+    try {
+      response = await executePipeline(this.httpContext(queryOptions), request, this.createAbortSignal(queryOptions));
+    } catch (e) {
+      this.baton = null;
+      this.autocommit = true;
+      throw e;
+    }
+    this.baton = response.baton;
+    if (response.base_url) {
+      this.baseUrl = normalizeUrl(response.base_url);
+    }
+    this.updateAutocommit(response);
+    if (response.results && response.results[0]) {
+      const result = response.results[0];
+      if (result.type === "error") {
+        throw new DatabaseError(result.error?.message || "Describe execution failed", result.error?.code);
+      }
+      if (result.response?.type === "describe" && result.response.result) {
+        return result.response.result;
+      }
+    }
+    throw new DatabaseError("Unexpected describe response");
+  }
+  async execute(sql, args = [], safeIntegers = false, queryOptions) {
+    const { response, entries } = await this.executeRaw(sql, args, queryOptions);
+    const result = await this.processCursorEntries(entries, safeIntegers);
+    return result;
+  }
+  static autocommitProbeStep() {
+    return {
+      stmt: { sql: "SELECT 1", args: [], named_args: [], want_rows: false },
+      condition: { type: "is_autocommit" }
+    };
+  }
+  async* trackAutocommit(entries, probeIdx, queryOptions) {
+    let sawProbe = false;
+    let unreliable = false;
+    let completed = false;
+    try {
+      for await (const entry of entries) {
+        if (entry.type === "step_begin" && entry.step === probeIdx) {
+          sawProbe = true;
+          continue;
+        }
+        if (sawProbe && (entry.type === "row" || entry.type === "step_end")) {
+          continue;
+        }
+        if (entry.type === "error" || entry.type === "step_error" && entry.step === probeIdx) {
+          unreliable = true;
+          if (entry.type === "step_error") {
+            continue;
+          }
+        }
+        yield entry;
+      }
+      completed = true;
+    } finally {
+      if (completed && !unreliable) {
+        this.autocommit = sawProbe;
+      } else {
+        await this.refreshAutocommit(queryOptions);
+      }
+    }
+  }
+  async executeRaw(sql, args = [], queryOptions) {
+    const encodedArgs = encodeSqlArgs(args);
+    const request = {
+      baton: this.baton,
+      batch: {
+        steps: [{
+          stmt: {
+            sql,
+            args: encodedArgs.args,
+            named_args: encodedArgs.namedArgs,
+            want_rows: true
+          }
+        }, _Session.autocommitProbeStep()]
+      }
+    };
+    let result;
+    try {
+      result = await executeCursor(this.httpContext(queryOptions), request, this.createAbortSignal(queryOptions));
+    } catch (e) {
+      this.baton = null;
+      this.autocommit = true;
+      throw e;
+    }
+    const { response, entries } = result;
+    this.baton = response.baton;
+    if (response.base_url) {
+      this.baseUrl = normalizeUrl(response.base_url);
+    }
+    return { response, entries: this.trackAutocommit(entries, 1, queryOptions) };
+  }
+  async refreshAutocommit(queryOptions) {
+    const request = {
+      baton: this.baton,
+      requests: [{ type: "get_autocommit" }]
+    };
+    let response;
+    try {
+      response = await executePipeline(this.httpContext(), request, this.createAbortSignal(queryOptions));
+    } catch {
+      this.baton = null;
+      this.autocommit = true;
+      return;
+    }
+    this.baton = response.baton;
+    if (response.base_url) {
+      this.baseUrl = normalizeUrl(response.base_url);
+    }
+    this.updateAutocommit(response);
+  }
+  async processCursorEntries(entries, safeIntegers = false) {
+    let columns = [];
+    let columnTypes = [];
+    let rows = [];
+    let rowsAffected = 0;
+    let lastInsertRowid;
+    for await (const entry of entries) {
+      switch (entry.type) {
+        case "step_begin":
+          if (entry.cols) {
+            columns = entry.cols.map((col) => col.name);
+            columnTypes = entry.cols.map((col) => col.decltype || "");
+          }
+          break;
+        case "row":
+          if (entry.row) {
+            const decodedRow = entry.row.map((value) => decodeValue(value, safeIntegers));
+            const rowObject = this.createRowObject(decodedRow, columns);
+            rows.push(rowObject);
+          }
+          break;
+        case "step_end":
+          if (entry.affected_row_count !== undefined) {
+            rowsAffected = entry.affected_row_count;
+          }
+          if (entry.last_insert_rowid !== undefined && entry.last_insert_rowid !== null) {
+            lastInsertRowid = typeof entry.last_insert_rowid === "number" ? entry.last_insert_rowid : parseInt(entry.last_insert_rowid, 10);
+          }
+          break;
+        case "step_error":
+        case "error":
+          throw new DatabaseError(entry.error?.message || "SQL execution failed", entry.error?.code);
+      }
+    }
+    return {
+      columns,
+      columnTypes,
+      rows,
+      rowsAffected,
+      lastInsertRowid
+    };
+  }
+  createRowObject(values, columns) {
+    const row = [...values];
+    columns.forEach((column, index) => {
+      if (column && isValidIdentifier(column)) {
+        Object.defineProperty(row, column, {
+          value: values[index],
+          enumerable: false,
+          writable: false,
+          configurable: true
+        });
+      }
+    });
+    return row;
+  }
+  createObjectRow(values, columns) {
+    const row = {};
+    columns.forEach((column, index) => {
+      row[column] = values[index];
+    });
+    return row;
+  }
+  async batch(statements, mode, queryOptions, safeIntegers = false, raw = false) {
+    const userSteps = statements.map((statement) => {
+      if (typeof statement === "string") {
+        return {
+          stmt: { sql: statement, args: [], named_args: [], want_rows: true }
+        };
+      }
+      const encodedArgs = encodeSqlArgs(statement.args ?? []);
+      return {
+        stmt: {
+          sql: statement.sql,
+          args: encodedArgs.args,
+          named_args: encodedArgs.namedArgs,
+          want_rows: true
+        }
+      };
+    });
+    let steps;
+    let firstUserStepIdx = 0;
+    let lastUserStepIdx = userSteps.length - 1;
+    let beginIdx = -1;
+    let commitIdx = -1;
+    let rollbackIdx = -1;
+    if (mode === undefined) {
+      steps = userSteps;
+    } else {
+      beginIdx = 0;
+      firstUserStepIdx = 1;
+      lastUserStepIdx = userSteps.length;
+      commitIdx = lastUserStepIdx + 1;
+      rollbackIdx = commitIdx + 1;
+      steps = [
+        { stmt: { sql: `BEGIN ${normalizeBatchMode(mode)}`, args: [], named_args: [], want_rows: false } },
+        ...userSteps.map((step, i) => ({
+          ...step,
+          condition: { type: "ok", step: i === 0 ? beginIdx : firstUserStepIdx + i - 1 }
+        })),
+        {
+          stmt: { sql: "COMMIT", args: [], named_args: [], want_rows: false },
+          condition: { type: "ok", step: lastUserStepIdx }
+        },
+        {
+          stmt: { sql: "ROLLBACK", args: [], named_args: [], want_rows: false },
+          condition: {
+            type: "and",
+            conds: [
+              { type: "ok", step: beginIdx },
+              { type: "not", cond: { type: "ok", step: commitIdx } }
+            ]
+          }
+        }
+      ];
+    }
+    const probeIdx = steps.length;
+    const request = {
+      baton: this.baton,
+      batch: { steps: [...steps, _Session.autocommitProbeStep()] }
+    };
+    let batchResult;
+    try {
+      batchResult = await executeCursor(this.httpContext(queryOptions), request, this.createAbortSignal(queryOptions));
+    } catch (e) {
+      this.baton = null;
+      this.autocommit = true;
+      throw e;
+    }
+    const { response, entries } = batchResult;
+    this.baton = response.baton;
+    if (response.base_url) {
+      this.baseUrl = normalizeUrl(response.base_url);
+    }
+    const results = userSteps.map(() => ({
+      columns: [],
+      columnTypes: [],
+      rows: [],
+      rowsAffected: 0
+    }));
+    let deferredError = null;
+    let currentResultIdx;
+    let nextNonAtomicIdx = 0;
+    const stepToResultIdx = (step) => {
+      if (mode === undefined) {
+        return step ?? nextNonAtomicIdx;
+      }
+      if (step !== undefined && step >= firstUserStepIdx && step <= lastUserStepIdx) {
+        return step - firstUserStepIdx;
+      }
+      return;
+    };
+    for await (const entry of this.trackAutocommit(entries, probeIdx, queryOptions)) {
+      if (deferredError !== null && entry.type !== "error") {
+        continue;
+      }
+      switch (entry.type) {
+        case "step_begin":
+          currentResultIdx = stepToResultIdx(entry.step);
+          if (currentResultIdx !== undefined && currentResultIdx < results.length && entry.cols) {
+            results[currentResultIdx].columns = entry.cols.map((col) => col.name);
+            results[currentResultIdx].columnTypes = entry.cols.map((col) => col.decltype || "");
+          }
+          break;
+        case "row":
+          if (currentResultIdx !== undefined && currentResultIdx < results.length && entry.row) {
+            const decodedRow = entry.row.map((value) => decodeValue(value, safeIntegers));
+            const row = raw ? decodedRow : this.createObjectRow(decodedRow, results[currentResultIdx].columns);
+            results[currentResultIdx].rows.push(row);
+          }
+          break;
+        case "step_end": {
+          let idx = currentResultIdx;
+          if (idx === undefined && mode === undefined) {
+            idx = nextNonAtomicIdx;
+          }
+          if (idx !== undefined && idx < results.length) {
+            if (entry.affected_row_count !== undefined) {
+              results[idx].rowsAffected = results[idx].columns.length > 0 ? 0 : entry.affected_row_count;
+            }
+          }
+          if (mode === undefined && idx !== undefined) {
+            nextNonAtomicIdx = idx + 1;
+          }
+          currentResultIdx = undefined;
+          break;
+        }
+        case "step_error":
+          if (deferredError === null && entry.step !== rollbackIdx) {
+            deferredError = new DatabaseError(entry.error?.message || "Batch execution failed", entry.error?.code);
+          }
+          currentResultIdx = undefined;
+          break;
+        case "error":
+          throw new DatabaseError(entry.error?.message || "Batch execution failed", entry.error?.code);
+      }
+    }
+    if (deferredError !== null) {
+      throw deferredError;
+    }
+    return results;
+  }
+  async sequence(sql, queryOptions) {
+    const request = {
+      baton: this.baton,
+      requests: [
+        { type: "sequence", sql },
+        { type: "get_autocommit" }
+      ]
+    };
+    let seqResponse;
+    try {
+      seqResponse = await executePipeline(this.httpContext(queryOptions), request, this.createAbortSignal(queryOptions));
+    } catch (e) {
+      this.baton = null;
+      this.autocommit = true;
+      throw e;
+    }
+    this.baton = seqResponse.baton;
+    if (seqResponse.base_url) {
+      this.baseUrl = normalizeUrl(seqResponse.base_url);
+    }
+    this.updateAutocommit(seqResponse);
+    if (seqResponse.results && seqResponse.results[0]) {
+      const result = seqResponse.results[0];
+      if (result.type === "error") {
+        throw new DatabaseError(result.error?.message || "Sequence execution failed", result.error?.code);
+      }
+    }
+  }
+  async close() {
+    if (this.baton) {
+      try {
+        const request = {
+          baton: this.baton,
+          requests: [{
+            type: "close"
+          }]
+        };
+        await executePipeline(this.httpContext(), request);
+      } catch {}
+    }
+    this.baton = null;
+    this.baseUrl = "";
+    this.autocommit = true;
+  }
+};
+function createExpandedRow(row, columns) {
+  const expanded = {};
+  columns.forEach((column, index) => {
+    expanded[column] = row[index];
+  });
+  return expanded;
+}
+var Statement = class _Statement {
+  constructor(sessionConfig, sql, columns) {
+    this.presentationMode = "expanded";
+    this.safeIntegerMode = false;
+    this.session = new Session(sessionConfig);
+    this.sql = sql;
+    this.columnMetadata = columns || [];
+  }
+  static fromSession(session, sql, columns, execLock) {
+    const stmt = Object.create(_Statement.prototype);
+    stmt.session = session;
+    stmt.sql = sql;
+    stmt.columnMetadata = columns || [];
+    stmt.presentationMode = "expanded";
+    stmt.safeIntegerMode = false;
+    stmt.execLock = execLock;
+    return stmt;
+  }
+  get reader() {
+    return this.columnMetadata.length > 0;
+  }
+  raw(raw) {
+    this.presentationMode = raw === false ? "expanded" : "raw";
+    return this;
+  }
+  pluck(pluck) {
+    this.presentationMode = pluck === false ? "expanded" : "pluck";
+    return this;
+  }
+  safeIntegers(toggle) {
+    this.safeIntegerMode = toggle === false ? false : true;
+    return this;
+  }
+  columns() {
+    return this.columnMetadata.map((col) => ({
+      name: col.name,
+      type: col.decltype
+    }));
+  }
+  async withLock(fn) {
+    if (!this.execLock) {
+      return await fn();
+    }
+    await this.execLock.acquire();
+    try {
+      return await fn();
+    } finally {
+      this.execLock.release();
+    }
+  }
+  async run(args, queryOptions) {
+    return await this.withLock(async () => {
+      const normalizedArgs = normalizeArgs(args);
+      const result = await this.session.execute(this.sql, normalizedArgs, this.safeIntegerMode, queryOptions);
+      return { changes: result.rowsAffected, lastInsertRowid: result.lastInsertRowid };
+    });
+  }
+  async get(args, queryOptions) {
+    return await this.withLock(async () => {
+      const normalizedArgs = normalizeArgs(args);
+      const result = await this.session.execute(this.sql, normalizedArgs, this.safeIntegerMode, queryOptions);
+      const row = result.rows[0];
+      if (!row) {
+        return;
+      }
+      if (this.presentationMode === "pluck") {
+        return row[0];
+      }
+      if (this.presentationMode === "raw") {
+        return [...row];
+      }
+      return createExpandedRow(row, result.columns);
+    });
+  }
+  async all(args, queryOptions) {
+    return await this.withLock(async () => {
+      const normalizedArgs = normalizeArgs(args);
+      const result = await this.session.execute(this.sql, normalizedArgs, this.safeIntegerMode, queryOptions);
+      if (this.presentationMode === "pluck") {
+        return result.rows.map((row) => row[0]);
+      }
+      if (this.presentationMode === "raw") {
+        return result.rows.map((row) => [...row]);
+      }
+      return result.rows.map((row) => createExpandedRow(row, result.columns));
+    });
+  }
+  async* iterate(args, queryOptions) {
+    if (this.execLock) {
+      const rows = await this.all(args, queryOptions);
+      for (const row of rows) {
+        yield row;
+      }
+      return;
+    }
+    const normalizedArgs = normalizeArgs(args);
+    const { entries } = await this.session.executeRaw(this.sql, normalizedArgs, queryOptions);
+    let columns = [];
+    for await (const entry of entries) {
+      switch (entry.type) {
+        case "step_begin":
+          if (entry.cols) {
+            columns = entry.cols.map((col) => col.name);
+          }
+          break;
+        case "row":
+          if (entry.row) {
+            const decodedRow = entry.row.map((value) => decodeValue(value, this.safeIntegerMode));
+            if (this.presentationMode === "pluck") {
+              yield decodedRow[0];
+            } else if (this.presentationMode === "raw") {
+              yield decodedRow;
+            } else {
+              yield createExpandedRow(decodedRow, columns);
+            }
+          }
+          break;
+        case "step_error":
+        case "error":
+          throw new DatabaseError(entry.error?.message || "SQL execution failed");
+      }
+    }
+  }
+};
+function normalizeBatchOptions(options) {
+  if (options != null && typeof options === "object") {
+    return {
+      mode: options.mode,
+      raw: options.raw === true
+    };
+  }
+  return {
+    mode: options,
+    raw: false
+  };
+}
+function toResultSet(result) {
+  return {
+    columns: result.columns ?? [],
+    columnTypes: result.columnTypes ?? [],
+    rows: result.rows ?? [],
+    rowsAffected: result.rowsAffected ?? 0
+  };
+}
+var Connection = class {
+  constructor(config) {
+    this.isOpen = true;
+    this.defaultSafeIntegerMode = false;
+    this.execLock = new AsyncLock;
+    if (!config.url) {
+      throw new Error("invalid config: url is required");
+    }
+    this.config = config;
+    this.session = new Session(config);
+    Object.defineProperty(this, "inTransaction", {
+      get: () => this.session.inTransaction,
+      enumerable: true
+    });
+  }
+  get inTransaction() {
+    return this.session.inTransaction;
+  }
+  async prepare(sql) {
+    if (!this.isOpen) {
+      throw new TypeError("The database connection is not open");
+    }
+    await this.execLock.acquire();
+    let description;
+    try {
+      description = await this.session.describe(sql);
+    } finally {
+      this.execLock.release();
+    }
+    const stmt = Statement.fromSession(this.session, sql, description.cols, this.execLock);
+    if (this.defaultSafeIntegerMode) {
+      stmt.safeIntegers(true);
+    }
+    return stmt;
+  }
+  async run(sql, ...bindParameters) {
+    if (!this.isOpen)
+      throw new TypeError("The database connection is not open");
+    const { params, queryOptions } = splitBindParameters(bindParameters);
+    await this.execLock.acquire();
+    try {
+      const result = await this.session.execute(sql, normalizeArgs(params), this.defaultSafeIntegerMode, queryOptions);
+      return { changes: result.rowsAffected, lastInsertRowid: result.lastInsertRowid };
+    } finally {
+      this.execLock.release();
+    }
+  }
+  async get(sql, ...bindParameters) {
+    if (!this.isOpen)
+      throw new TypeError("The database connection is not open");
+    const { params, queryOptions } = splitBindParameters(bindParameters);
+    await this.execLock.acquire();
+    try {
+      const result = await this.session.execute(sql, normalizeArgs(params), this.defaultSafeIntegerMode, queryOptions);
+      const row = result.rows[0];
+      if (!row)
+        return;
+      return createExpandedRow(row, result.columns);
+    } finally {
+      this.execLock.release();
+    }
+  }
+  async all(sql, ...bindParameters) {
+    if (!this.isOpen)
+      throw new TypeError("The database connection is not open");
+    const { params, queryOptions } = splitBindParameters(bindParameters);
+    await this.execLock.acquire();
+    try {
+      const result = await this.session.execute(sql, normalizeArgs(params), this.defaultSafeIntegerMode, queryOptions);
+      return result.rows.map((row) => createExpandedRow(row, result.columns));
+    } finally {
+      this.execLock.release();
+    }
+  }
+  async* iterate(sql, ...bindParameters) {
+    for (const row of await this.all(sql, ...bindParameters))
+      yield row;
+  }
+  async exec(sql, queryOptions) {
+    if (!this.isOpen) {
+      throw new TypeError("The database connection is not open");
+    }
+    await this.execLock.acquire();
+    try {
+      return await this.session.sequence(sql, queryOptions);
+    } finally {
+      this.execLock.release();
+    }
+  }
+  async batch(statements, options, queryOptions) {
+    if (!Array.isArray(statements)) {
+      throw new TypeError("Expected first argument to be an array of statements");
+    }
+    if (!this.isOpen) {
+      throw new TypeError("The database connection is not open");
+    }
+    await this.execLock.acquire();
+    try {
+      const { mode, raw } = normalizeBatchOptions(options);
+      const effectiveMode = this.session.inTransaction ? undefined : mode;
+      const results = await this.session.batch(statements, effectiveMode, queryOptions, this.defaultSafeIntegerMode, raw);
+      return results.map((result) => toResultSet(result));
+    } finally {
+      this.execLock.release();
+    }
+  }
+  async pragma(pragma, queryOptions) {
+    if (!this.isOpen) {
+      throw new TypeError("The database connection is not open");
+    }
+    await this.execLock.acquire();
+    try {
+      const sql = `PRAGMA ${pragma}`;
+      return await this.session.execute(sql, [], false, queryOptions);
+    } finally {
+      this.execLock.release();
+    }
+  }
+  defaultSafeIntegers(toggle) {
+    this.defaultSafeIntegerMode = toggle === false ? false : true;
+  }
+  transaction(fn) {
+    if (typeof fn !== "function") {
+      throw new TypeError("Expected first argument to be a function");
+    }
+    const db = this;
+    const wrapTxn = (mode) => {
+      return async (...bindParameters) => {
+        await db.exec("BEGIN " + mode);
+        try {
+          const result = await fn(...bindParameters);
+          await db.exec("COMMIT");
+          return result;
+        } catch (err) {
+          await db.exec("ROLLBACK");
+          throw err;
+        }
+      };
+    };
+    const properties = {
+      default: { value: wrapTxn("") },
+      deferred: { value: wrapTxn("DEFERRED") },
+      concurrent: { value: wrapTxn("CONCURRENT") },
+      immediate: { value: wrapTxn("IMMEDIATE") },
+      exclusive: { value: wrapTxn("EXCLUSIVE") },
+      database: { value: this, enumerable: true }
+    };
+    Object.defineProperties(properties.default.value, properties);
+    Object.defineProperties(properties.deferred.value, properties);
+    Object.defineProperties(properties.concurrent.value, properties);
+    Object.defineProperties(properties.immediate.value, properties);
+    Object.defineProperties(properties.exclusive.value, properties);
+    return properties.default.value;
+  }
+  transactionAsync(fn) {
+    if (typeof fn !== "function") {
+      throw new TypeError("Expected first argument to be a function");
+    }
+    if (fn.length === 0) {
+      throw new TypeError("transactionAsync() callbacks receive a Transaction handle as their first argument and must declare it: db.transactionAsync(async (tx, ...args) => { await tx.run(...) }).");
+    }
+    const db = this;
+    const wrapTxn = (mode) => {
+      return async (...bindParameters) => {
+        if (!db.isOpen) {
+          throw new TypeError("The database connection is not open");
+        }
+        const session = new Session(db.config);
+        const txn = new Transaction(session, db.defaultSafeIntegerMode);
+        try {
+          await txn.exec("BEGIN " + mode);
+          try {
+            const result = await fn(txn, ...bindParameters);
+            await txn.exec("COMMIT");
+            return result;
+          } catch (err) {
+            try {
+              await txn.exec("ROLLBACK");
+            } catch {}
+            throw err;
+          }
+        } finally {
+          txn.finish();
+          await session.close();
+        }
+      };
+    };
+    const properties = {
+      default: { value: wrapTxn("") },
+      deferred: { value: wrapTxn("DEFERRED") },
+      concurrent: { value: wrapTxn("CONCURRENT") },
+      immediate: { value: wrapTxn("IMMEDIATE") },
+      exclusive: { value: wrapTxn("EXCLUSIVE") },
+      database: { value: this, enumerable: true }
+    };
+    Object.defineProperties(properties.default.value, properties);
+    Object.defineProperties(properties.deferred.value, properties);
+    Object.defineProperties(properties.concurrent.value, properties);
+    Object.defineProperties(properties.immediate.value, properties);
+    Object.defineProperties(properties.exclusive.value, properties);
+    return properties.default.value;
+  }
+  async close() {
+    this.isOpen = false;
+    await this.session.close();
+  }
+  async reconnect() {
+    try {
+      if (this.isOpen) {
+        await this.close();
+      }
+    } finally {
+      this.session = new Session(this.config);
+      this.isOpen = true;
+    }
+  }
+};
+var Transaction = class {
+  constructor(session, defaultSafeIntegerMode) {
+    this.active = true;
+    this.session = session;
+    this.defaultSafeIntegerMode = defaultSafeIntegerMode;
+    const lock = new AsyncLock;
+    this.gate = {
+      acquire: async () => {
+        this.assertActive();
+        await lock.acquire();
+      },
+      release: () => {
+        lock.release();
+      }
+    };
+  }
+  async withGate(fn) {
+    await this.gate.acquire();
+    try {
+      return await fn();
+    } finally {
+      this.gate.release();
+    }
+  }
+  get open() {
+    return this.active;
+  }
+  assertActive() {
+    if (!this.active) {
+      throw new TypeError("The transaction has already completed");
+    }
+  }
+  finish() {
+    this.active = false;
+  }
+  async prepare(sql) {
+    const description = await this.withGate(() => this.session.describe(sql));
+    const stmt = Statement.fromSession(this.session, sql, description.cols, this.gate);
+    if (this.defaultSafeIntegerMode) {
+      stmt.safeIntegers(true);
+    }
+    return stmt;
+  }
+  async run(sql, ...bindParameters) {
+    const { params, queryOptions } = splitBindParameters(bindParameters);
+    return await this.withGate(async () => {
+      const result = await this.session.execute(sql, normalizeArgs(params), this.defaultSafeIntegerMode, queryOptions);
+      return { changes: result.rowsAffected, lastInsertRowid: result.lastInsertRowid };
+    });
+  }
+  async get(sql, ...bindParameters) {
+    const { params, queryOptions } = splitBindParameters(bindParameters);
+    return await this.withGate(async () => {
+      const result = await this.session.execute(sql, normalizeArgs(params), this.defaultSafeIntegerMode, queryOptions);
+      const row = result.rows[0];
+      if (!row)
+        return;
+      return createExpandedRow(row, result.columns);
+    });
+  }
+  async all(sql, ...bindParameters) {
+    const { params, queryOptions } = splitBindParameters(bindParameters);
+    return await this.withGate(async () => {
+      const result = await this.session.execute(sql, normalizeArgs(params), this.defaultSafeIntegerMode, queryOptions);
+      return result.rows.map((row) => createExpandedRow(row, result.columns));
+    });
+  }
+  async* iterate(sql, ...bindParameters) {
+    for (const row of await this.all(sql, ...bindParameters))
+      yield row;
+  }
+  async execute(sql, args, queryOptions) {
+    return await this.withGate(() => this.session.execute(sql, args || [], this.defaultSafeIntegerMode, queryOptions));
+  }
+  async exec(sql, queryOptions) {
+    return await this.withGate(() => this.session.sequence(sql, queryOptions));
+  }
+  async batch(statements, options, queryOptions) {
+    if (!Array.isArray(statements)) {
+      throw new TypeError("Expected first argument to be an array of statements");
+    }
+    const { raw } = normalizeBatchOptions(options);
+    return await this.withGate(async () => {
+      const results = await this.session.batch(statements, undefined, queryOptions, this.defaultSafeIntegerMode, raw);
+      return results.map((result) => toResultSet(result));
+    });
+  }
+};
+function connect(config) {
+  return new Connection(config);
+}
+
+// src/relay/turso.ts
+var TABLE = "acm_relay_queue";
+var INDEX = "acm_relay_queue_recipient_idx";
+
+class TursoError extends Error {
+  cause;
+  constructor(message, cause) {
+    super(message, { cause });
+    this.name = "TursoError";
+    this.cause = cause;
+  }
+}
+
+class TursoStore {
+  client;
+  ttlMs;
+  maxQueue;
+  namespace;
+  now;
+  schemaReady;
+  constructor(options) {
+    if (!options.url?.trim())
+      throw new TursoError("TURSO_DATABASE_URL \uC774 \uBE44\uC5B4 \uC788\uB2E4");
+    if (!options.token?.trim())
+      throw new TursoError("TURSO_AUTH_TOKEN \uC774 \uBE44\uC5B4 \uC788\uB2E4");
+    const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
+    const maxQueue = options.maxQueue ?? DEFAULT_MAX_QUEUE;
+    if (!Number.isFinite(ttlMs) || ttlMs <= 0)
+      throw new TursoError("ttlMs \uB294 \uC591\uC218\uC5EC\uC57C \uD55C\uB2E4");
+    if (!Number.isInteger(maxQueue) || maxQueue <= 0)
+      throw new TursoError("maxQueue \uB294 \uC591\uC758 \uC815\uC218\uC5EC\uC57C \uD55C\uB2E4");
+    const namespace = options.namespace?.trim() || "default";
+    this.client = options.client ?? connect({ url: options.url.trim(), authToken: options.token.trim() });
+    this.ttlMs = ttlMs;
+    this.maxQueue = maxQueue;
+    this.namespace = namespace;
+    this.now = options.now ?? Date.now;
+  }
+  async push(recipient, item) {
+    const receivedAt = finiteNumber(item.receivedAt, "receivedAt");
+    const expiresAt = receivedAt + this.ttlMs;
+    await this.atomic([
+      {
+        sql: `DELETE FROM ${TABLE} WHERE namespace = ? AND expires_at <= ?`,
+        args: [this.namespace, this.now()]
+      },
+      {
+        sql: `INSERT INTO ${TABLE} (namespace, recipient, received_at, expires_at, envelope)
+              VALUES (?, ?, ?, ?, ?)`,
+        args: [this.namespace, recipient, receivedAt, expiresAt, item.envelope]
+      },
+      {
+        sql: `DELETE FROM ${TABLE}
+              WHERE namespace = ? AND recipient = ?
+                AND id NOT IN (
+                  SELECT id FROM ${TABLE}
+                   WHERE namespace = ? AND recipient = ?
+                   ORDER BY id DESC
+                   LIMIT ?
+                )`,
+        args: [this.namespace, recipient, this.namespace, recipient, this.maxQueue]
+      }
+    ]);
+  }
+  async drain(recipient, limit) {
+    const count = integerLimit(limit);
+    if (count <= 0)
+      return [];
+    const now = this.now();
+    const results = await this.atomic([
+      {
+        sql: `DELETE FROM ${TABLE} WHERE namespace = ? AND expires_at <= ?`,
+        args: [this.namespace, now]
+      },
+      {
+        sql: `DELETE FROM ${TABLE}
+              WHERE id IN (
+                SELECT id FROM ${TABLE}
+                 WHERE namespace = ? AND recipient = ? AND expires_at > ?
+                 ORDER BY id ASC
+                 LIMIT ?
+              )
+              RETURNING received_at, envelope`,
+        args: [this.namespace, recipient, now, count]
+      }
+    ]);
+    return rowsOf(results[1], "drain").map((row) => ({
+      receivedAt: finiteNumber(row.received_at, "received_at"),
+      envelope: bytes(row.envelope)
+    }));
+  }
+  async depth(recipient) {
+    const now = this.now();
+    const results = await this.atomic([
+      {
+        sql: `DELETE FROM ${TABLE} WHERE namespace = ? AND expires_at <= ?`,
+        args: [this.namespace, now]
+      },
+      {
+        sql: `SELECT COUNT(*) AS count FROM ${TABLE}
+               WHERE namespace = ? AND recipient = ? AND expires_at > ?`,
+        args: [this.namespace, recipient, now]
+      }
+    ]);
+    const row = rowsOf(results[1], "depth")[0];
+    return row === undefined ? 0 : finiteNumber(row.count, "count");
+  }
+  async atomic(statements) {
+    await this.ensureSchema();
+    try {
+      return await this.client.batch(statements, "immediate");
+    } catch (e) {
+      throw wrap("\uC6D0\uC790\uC801 \uBC30\uCE58", e);
+    }
+  }
+  async ensureSchema() {
+    if (this.schemaReady !== undefined)
+      return await this.schemaReady;
+    const work = this.client.batch([
+      `CREATE TABLE IF NOT EXISTS ${TABLE} (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             namespace TEXT NOT NULL,
+             recipient TEXT NOT NULL,
+             received_at INTEGER NOT NULL,
+             expires_at INTEGER NOT NULL,
+             envelope BLOB NOT NULL
+           )`,
+      `CREATE INDEX IF NOT EXISTS ${INDEX}
+             ON ${TABLE} (namespace, recipient, id)`
+    ], "immediate").then(() => {
+      return;
+    });
+    this.schemaReady = work.catch((e) => {
+      this.schemaReady = undefined;
+      throw wrap("\uC2A4\uD0A4\uB9C8 \uC900\uBE44", e);
+    });
+    return await this.schemaReady;
+  }
+}
+function fromEnv2(env, options = {}) {
+  const url = env.TURSO_DATABASE_URL?.trim();
+  const token = env.TURSO_AUTH_TOKEN?.trim();
+  if (!url || !token) {
+    throw new TursoError("Turso \uC790\uACA9\uC774 \uC5C6\uB2E4 \u2014 TURSO_DATABASE_URL \uACFC TURSO_AUTH_TOKEN \uC744 \uC124\uC815\uD55C\uB2E4.");
+  }
+  return new TursoStore({ ...options, url, token });
+}
+function hasTursoCredentials(env) {
+  return Boolean(env.TURSO_DATABASE_URL?.trim() && env.TURSO_AUTH_TOKEN?.trim());
+}
+function hasAnyTursoCredentials(env) {
+  return Boolean(env.TURSO_DATABASE_URL?.trim() || env.TURSO_AUTH_TOKEN?.trim());
+}
+function rowsOf(result, action) {
+  if (result === undefined || !Array.isArray(result.rows)) {
+    throw new TursoError(`Turso ${action} \uC751\uB2F5\uC5D0 \uD589 \uBAA9\uB85D\uC774 \uC5C6\uB2E4`);
+  }
+  return result.rows.filter((row) => typeof row === "object" && row !== null);
+}
+function finiteNumber(value, label) {
+  const number = typeof value === "bigint" ? Number(value) : value;
+  if (typeof number !== "number" || !Number.isFinite(number)) {
+    throw new TursoError(`Turso ${label} \uC774 \uC22B\uC790\uAC00 \uC544\uB2C8\uB2E4`);
+  }
+  return number;
+}
+function integerLimit(value) {
+  if (!Number.isFinite(value))
+    throw new TursoError("drain limit \uC774 \uC720\uD55C\uD55C \uC22B\uC790\uAC00 \uC544\uB2C8\uB2E4");
+  return Math.max(0, Math.floor(value));
+}
+function bytes(value) {
+  if (value instanceof Uint8Array)
+    return new Uint8Array(value);
+  if (value instanceof ArrayBuffer)
+    return new Uint8Array(value.slice(0));
+  throw new TursoError(`Turso envelope \uC774 BLOB \uC774 \uC544\uB2C8\uB2E4: ${typeof value}`);
+}
+function wrap(action, cause) {
+  if (cause instanceof TursoError)
+    return cause;
+  return new TursoError(`Turso ${action} \uC2E4\uD328: ${cause instanceof Error ? cause.message : String(cause)}`, cause);
+}
+
 // src/relay/select-store.ts
 function selectStore(env, limits) {
-  if (hasUpstashCredentials(env)) {
-    return { store: fromEnv(env, { ttlMs: limits.ttlMs, maxQueue: limits.maxQueue }), durable: true };
+  const requested = requestedProvider(env);
+  if (requested !== undefined)
+    return makeStore(requested, env, limits);
+  if (hasAnyTursoCredentials(env) && !hasTursoCredentials(env)) {
+    throw new Error("Turso \uC790\uACA9\uC774 \uBD88\uC644\uC804\uD558\uB2E4 \u2014 TURSO_DATABASE_URL \uACFC TURSO_AUTH_TOKEN \uC744 \uD568\uAED8 \uC124\uC815\uD55C\uB2E4.");
   }
+  if (hasAnyUpstashCredentials(env) && !hasUpstashCredentials(env)) {
+    throw new Error("Upstash \uC790\uACA9\uC774 \uBD88\uC644\uC804\uD558\uB2E4 \u2014 UPSTASH_REDIS_REST_URL \uACFC UPSTASH_REDIS_REST_TOKEN \uC744 \uD568\uAED8 \uC124\uC815\uD55C\uB2E4. " + "(Vercel \uD1B5\uD569\uC758 KV_REST_API_URL/TOKEN \uB3C4 \uC9C0\uC6D0\uD55C\uB2E4.)");
+  }
+  const available = [];
+  if (hasTursoCredentials(env))
+    available.push("turso");
+  if (hasUpstashCredentials(env))
+    available.push("upstash");
+  if (available.length > 1) {
+    throw new Error(`\uC800\uC7A5\uC18C \uC790\uACA9\uC774 \uB458 \uB2E4 \uC788\uB2E4 (${available.join(", ")}) \u2014 \uC5B4\uB290 DB \uB97C \uC4F8\uC9C0 ACM_RELAY_STORE=turso \uB610\uB294 upstash \uB85C \uBA85\uC2DC\uD55C\uB2E4.`);
+  }
+  if (available.length === 1)
+    return makeStore(available[0], env, limits);
   if (env.VERCEL) {
-    throw new Error("\uC11C\uBC84\uB9AC\uC2A4\uC5D0\uC11C \uBA54\uBAA8\uB9AC \uC800\uC7A5\uC18C\uB85C \uB728\uC9C0 \uC54A\uB294\uB2E4 \u2014 \uC778\uC2A4\uD134\uC2A4\uB9C8\uB2E4 \uBA54\uBAA8\uB9AC\uAC00 \uAC08\uB824 \uBD09\uD22C\uAC00 \uC870\uC6A9\uD788 \uC0AC\uB77C\uC9C4\uB2E4. " + "UPSTASH_REDIS_REST_URL \uACFC UPSTASH_REDIS_REST_TOKEN \uC744 \uC124\uC815\uD55C\uB2E4. " + "(Vercel \uD1B5\uD569\uC774 KV_REST_API_URL/TOKEN \uC73C\uB85C \uB123\uC5C8\uB2E4\uBA74 \uADF8\uAC83\uB3C4 \uC77D\uB294\uB2E4.)");
+    throw new Error("\uC11C\uBC84\uB9AC\uC2A4\uC5D0\uC11C \uBA54\uBAA8\uB9AC \uC800\uC7A5\uC18C\uB85C \uB728\uC9C0 \uC54A\uB294\uB2E4 \u2014 \uC778\uC2A4\uD134\uC2A4\uB9C8\uB2E4 \uBA54\uBAA8\uB9AC\uAC00 \uAC08\uB824 \uBD09\uD22C\uAC00 \uC870\uC6A9\uD788 \uC0AC\uB77C\uC9C4\uB2E4. " + "ACM_RELAY_STORE=turso \uC640 TURSO_DATABASE_URL/TURSO_AUTH_TOKEN, \uB610\uB294 " + "ACM_RELAY_STORE=upstash \uC640 UPSTASH_REDIS_REST_URL/UPSTASH_REDIS_REST_TOKEN \uC744 \uC124\uC815\uD55C\uB2E4. " + "(Vercel \uD1B5\uD569\uC774 KV_REST_API_URL/TOKEN \uC73C\uB85C \uB123\uC5C8\uB2E4\uBA74 \uADF8\uAC83\uB3C4 \uC77D\uB294\uB2E4.)");
   }
-  return { store: new MemoryStore({ ttlMs: limits.ttlMs, maxQueue: limits.maxQueue }), durable: false };
+  return makeStore("memory", env, limits);
+}
+function requestedProvider(env) {
+  const raw = env.ACM_RELAY_STORE?.trim().toLowerCase();
+  if (!raw)
+    return;
+  if (raw === "memory" || raw === "local")
+    return "memory";
+  if (raw === "turso" || raw === "upstash")
+    return raw;
+  throw new Error(`ACM_RELAY_STORE \uAC12\uC774 \uC798\uBABB\uB410\uB2E4: '${raw}' \u2014 memory(local)\xB7turso\xB7upstash \uC911 \uD558\uB098\uB97C \uC4F4\uB2E4.`);
+}
+function makeStore(provider, env, limits) {
+  if (provider === "memory") {
+    if (env.VERCEL) {
+      throw new Error("ACM_RELAY_STORE=memory \uB294 \uC11C\uBC84\uB9AC\uC2A4\uC5D0\uC11C \uC4F8 \uC218 \uC5C6\uB2E4 \u2014 \uB85C\uCEEC \uB9B4\uB808\uC774\uC5D0\uC11C\uB9CC \uC120\uD0DD\uD55C\uB2E4. " + "\uC11C\uBC84\uB9AC\uC2A4\uB294 ACM_RELAY_STORE=turso \uB610\uB294 ACM_RELAY_STORE=upstash \uB97C \uC4F4\uB2E4.");
+    }
+    return {
+      store: new MemoryStore({ ttlMs: limits.ttlMs, maxQueue: limits.maxQueue }),
+      provider,
+      durable: false
+    };
+  }
+  if (provider === "turso") {
+    return {
+      store: fromEnv2(env, { ttlMs: limits.ttlMs, maxQueue: limits.maxQueue }),
+      provider,
+      durable: true
+    };
+  }
+  return {
+    store: fromEnv(env, { ttlMs: limits.ttlMs, maxQueue: limits.maxQueue }),
+    provider,
+    durable: true
+  };
+}
+function hasAnyUpstashCredentials(env) {
+  return Boolean(env.UPSTASH_REDIS_REST_URL?.trim() || env.UPSTASH_REDIS_REST_TOKEN?.trim() || env.KV_REST_API_URL?.trim() || env.KV_REST_API_TOKEN?.trim());
 }
 
 // src/relay/serve.ts
@@ -2677,6 +4111,9 @@ var USAGE = `agent-channel-mesh \uB9B4\uB808\uC774
   --ttl <ms>       \uBD09\uD22C \uBCF4\uAD00 \uAE30\uAC04, \uAE30\uBCF8 ${DEFAULT_TTL_MS} (7\uC77C)
   --max-queue <n>  \uC218\uC2E0\uC790\uB2F9 \uD050 \uC0C1\uD55C, \uAE30\uBCF8 ${DEFAULT_MAX_QUEUE}
 
+  ACM_RELAY_STORE  memory(local)\xB7turso\xB7upstash \uC911 \uC800\uC7A5\uC18C\uB97C \uC120\uD0DD\uD55C\uB2E4.
+                   \uB85C\uCEEC \uAE30\uBCF8\uAC12\uC740 memory \uB2E4. \uC11C\uBC84\uB9AC\uC2A4\uC5D0\uC11C\uB294 memory \uB97C \uC4F8 \uC218 \uC5C6\uB2E4.
+
   ACM_RELAY_TOKEN  \uC4F0\uAE30 \uD1A0\uD070 (\uD658\uACBD\uBCC0\uC218, \uCD5C\uC18C ${MIN_TOKEN_CHARS}\uC790 \u2014 \`openssl rand -hex 32\`).
                    \uB8E8\uD504\uBC31 \uBC16\uC73C\uB85C \uC5F4\uB824\uBA74 \uBC18\uB4DC\uC2DC \uC788\uC5B4\uC57C \uD55C\uB2E4 (\xA710.13).
                    \uD50C\uB798\uADF8\uAC00 \uC544\uB2CC \uC774\uC720\uB294 \`ps\` \uC5D0 \uADF8\uB300\uB85C \uCC0D\uD788\uAE30 \uB54C\uBB38\uC774\uB2E4.
@@ -2686,14 +4123,14 @@ var USAGE = `agent-channel-mesh \uB9B4\uB808\uC774
   GET  /health          \uC0C1\uD0DC \uD655\uC778
 `;
 function parseArgs(argv, env = {}) {
-  const fromEnv2 = { port: parsePort(env.PORT), host: parseHost(env.HOST) };
-  let port = fromEnv2.port ?? DEFAULT_PORT;
-  let host = fromEnv2.host ?? "127.0.0.1";
+  const fromEnv3 = { port: parsePort(env.PORT), host: parseHost(env.HOST) };
+  let port = fromEnv3.port ?? DEFAULT_PORT;
+  let host = fromEnv3.host ?? "127.0.0.1";
   let ttlMs = parsePositive(env.ACM_TTL_MS) ?? DEFAULT_TTL_MS;
   let maxQueue = parsePositive(env.ACM_MAX_QUEUE) ?? DEFAULT_MAX_QUEUE;
   const origin = {
-    port: fromEnv2.port === undefined ? "default" : "env",
-    host: fromEnv2.host === undefined ? "default" : "env"
+    port: fromEnv3.port === undefined ? "default" : "env",
+    host: fromEnv3.host === undefined ? "default" : "env"
   };
   for (let i = 0;i < argv.length; i++) {
     const arg = argv[i];
@@ -2753,7 +4190,7 @@ ${USAGE}`);
 var serverless = Boolean(process.env.VERCEL);
 function boot() {
   const args = parseArgs(serverless ? [] : process.argv.slice(2), process.env);
-  const { store, durable } = selectStore(process.env, args);
+  const { store, durable, provider } = selectStore(process.env, args);
   const postAuth = selectPostAuth(process.env, { serverless, host: args.host });
   const handler = createHandler({ store, postAuth });
   const options = {
@@ -2775,8 +4212,8 @@ function boot() {
     process.stdout.write(`\uB9B4\uB808\uC774\uAC00 \uB5B4\uB2E4: http://${args.host}:${server.port}
 ` + `  \uC124\uC815\uC758 relay \uC5D0 \uC774 \uC8FC\uC18C\uB97C \uB123\uB294\uB2E4.
 
-` + (durable ? `\uC800\uC7A5\uC18C\uB294 Upstash \uB2E4.
-` : `\uC800\uC7A5\uC18C\uB294 \uBA54\uBAA8\uB9AC\uB2E4 \u2014 \uC774 \uD504\uB85C\uC138\uC2A4\uAC00 \uC8FD\uC73C\uBA74 \uB300\uAE30 \uC911\uC778 \uBD09\uD22C\uAC00 \uC0AC\uB77C\uC9C4\uB2E4.
+` + (provider === "memory" ? `\uC800\uC7A5\uC18C\uB294 \uBA54\uBAA8\uB9AC\uB2E4 \u2014 \uC774 \uD504\uB85C\uC138\uC2A4\uAC00 \uC8FD\uC73C\uBA74 \uB300\uAE30 \uC911\uC778 \uBD09\uD22C\uAC00 \uC0AC\uB77C\uC9C4\uB2E4.
+` : `\uC800\uC7A5\uC18C\uB294 ${provider === "turso" ? "Turso" : "Upstash"} \uB2E4 \u2014 \uBC30\uB2EC\uB418\uAC70\uB098 TTL \uC774 \uC9C0\uB098\uBA74 \uD050\uC5D0\uC11C \uC0AC\uB77C\uC9C4\uB2E4.
 `) + ("open" in postAuth ? `\uC4F0\uAE30\uB294 \uC778\uC99D\uD558\uC9C0 \uC54A\uB294\uB2E4 \u2014 \uC774 \uAE30\uACC4\uC5D0\uC11C\uB9CC \uB2FF\uC744 \uC218 \uC788\uC5B4\uC11C\uB2E4.
 ` + `\uC678\uBD80\uC5D0 \uC5F4\uB824\uBA74 ACM_RELAY_TOKEN \uC744 \uB9CC\uB4E4\uACE0 --host 0.0.0.0 \uC744 \uC900\uB2E4.
 ` : `\uC4F0\uAE30\uC5D0\uB294 ACM_RELAY_TOKEN \uC774 \uD544\uC694\uD558\uB2E4 (\xA710.13).

@@ -1,5 +1,5 @@
 /**
- * 아카이브 방지 핑 — Vercel Cron 이 부른다
+ * 내구성 저장소 연결 확인 — Vercel Cron 이 부른다
  *
  * Upstash 무료 티어는 **30일 동안 명령이 하나도 없으면 DB 를 아카이브**한다.
  * 아카이브되면 인스턴스가 제거되고 REST 엔드포인트가 죽는다 — 다시 만들 수는
@@ -7,8 +7,9 @@
  * 그리고 그 사실은 조용히 일어나서, 릴레이가 실패하기 시작한 뒤에야 안다.
  *
  * 주 1회 명령을 하나 보내면 그 타이머가 리셋되므로 아카이브가 일어나지 않는다.
- * 실제 저장소를 건드려야 의미가 있다 — `/health` 는 Redis 에 닿지 않아서
- * 아무 명령도 발생시키지 않는다.
+ * 실제 저장소를 건드려야 의미가 있다 — `/health` 는 외부 저장소에 닿지 않아서
+ * 연결 상태나 Upstash 아카이브 타이머에 영향을 주지 않는다. Turso를 고른
+ * 경우에도 같은 경로가 실제 DB 연결을 확인한다.
  *
  * 존재하지 않는 키의 `depth` 를 읽는다. 읽기 한 번이라 데이터를 바꾸지 않고,
  * Vercel 이 cron 을 중복 호출해도(문서가 명시하는 best-effort 전달) 결과가
@@ -49,7 +50,7 @@ export async function keepalive(request: Request, store: Store): Promise<Respons
     return json({ ok: true, depth })
   } catch (e) {
     // 실패를 200 으로 감추지 않는다. Vercel 이 cron 실패를 알려야
-    // 아카이브가 임박한 것을 눈치챌 수 있다 — cron 은 재시도하지 않는다.
+    // 저장소 장애나 아카이브가 임박한 것을 눈치챌 수 있다 — cron 은 재시도하지 않는다.
     return json({ ok: false, detail: e instanceof Error ? e.message : String(e) }, 500)
   }
 }

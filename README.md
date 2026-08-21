@@ -20,6 +20,36 @@ relay is not a question of secrecy. It is this.
 
 The relay ships inside the plugin. Neither path asks you to **clone this repository.**
 
+## Choose the queue store
+
+Relay placement (local or deployed) and queue storage are separate choices. A local relay uses
+memory by default. A deployed relay must use a store outside the serverless process.
+
+| Value | Store | Use |
+|---|---|---|
+| `ACM_RELAY_STORE=memory` or `local` | Process memory | Claude ↔ Codex testing on one machine |
+| `ACM_RELAY_STORE=turso` | Turso Cloud | Recommended for Vercel and other serverless deployments |
+| `ACM_RELAY_STORE=upstash` | Upstash Redis | Compatibility with existing Vercel·Upstash deployments |
+
+A Turso deployment needs both `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN`. An Upstash deployment
+needs `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`. If both providers' credentials are
+present, set `ACM_RELAY_STORE`; when exactly one complete credential set is present, the relay can
+auto-detect it for backward compatibility.
+
+This is not a conversation archive. The relay holds an encrypted envelope only until the recipient
+fetches it, then deletes it. The default TTL is 7 days and each recipient queue is capped at 1,000
+envelopes. Turso follows the same delete-on-fetch and expiry contract.
+
+For local testing:
+
+```bash
+ACM_RELAY_STORE=memory bun run src/server.ts --port 8787
+```
+
+Selecting `memory` on a serverless deployment is rejected because different instances can lose the
+envelope between `POST` and `fetch`. See Turso's [TypeScript quickstart](https://docs.turso.tech/sdk/ts/quickstart)
+for database setup and the [Upstash pricing page](https://upstash.com/pricing/redis) for its current limits.
+
 ## Install
 
 All you need is [Bun](https://bun.sh). This repository is itself the marketplace.
@@ -64,6 +94,9 @@ Full walkthroughs — [on one machine](https://agent-channel-mesh-docs.vercel.ap
 ## Relay usage and free limits
 
 When a deployed relay uses Upstash as its store, **an empty inbox read still consumes a command**. The current Upstash Free limit is 500,000 commands per month; check the [Upstash pricing page](https://upstash.com/pricing/redis) for the current limit.
+
+Choosing Turso avoids this Upstash command quota, but Turso has its own read, write, and storage
+limits; check the current Turso plan before sharing a relay widely.
 
 The adapter uses adaptive idle polling: it starts at 2 seconds, backs off exponentially while the inbox is empty, and caps the idle/error interval at 5 minutes by default. One idle adapter therefore makes at most about 8,640 reads over 30 days at the cap; Claude and Codex sessions add to the total. The relay does not push from the server, so a message that arrives while idle is discovered on the next poll and can wait up to the maximum interval. Receiving a message resets the interval.
 

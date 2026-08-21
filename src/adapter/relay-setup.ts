@@ -220,7 +220,7 @@ export const RELAY_EXPORT_TOOL: ToolSpec = {
  *
  * 배포까지 하지 않는다 — 배포는 사용자의 Vercel 계정·과금·도메인이 걸린
  * 일이고, 되돌리는 것도 사용자만 할 수 있다. 여기서 만드는 것은 `vercel`
- * 이 그대로 올릴 수 있는 파일 세 개까지다.
+ * 이 그대로 올릴 수 있는 파일 네 개까지다.
  */
 export async function runRelayExport(args: Record<string, unknown>): Promise<ToolResult> {
   const dir = typeof args.dir === 'string' ? args.dir.trim() : ''
@@ -257,10 +257,19 @@ export async function runRelayExport(args: Record<string, unknown>): Promise<Too
       '여기서부터는 사용자의 계정이 필요하다 — 아래를 사용자가 직접 돌린다:\n\n' +
       `  cd ${dir}\n` +
       '  vercel link\n' +
-      '  vercel integration add upstash        # 저장소. 서버리스에서 메모리로는 뜨지 않는다\n' +
+      '  vercel env add ACM_RELAY_STORE production # 값을 turso 또는 upstash 중 하나로 입력\n' +
+      '  # Turso를 고르는 경우에만:\n' +
+      '  turso db create <database-name>\n' +
+      '  turso db show <database-name> --url\n' +
+      '  turso db tokens create <database-name>\n' +
+      '  vercel env add TURSO_DATABASE_URL production\n' +
+      '  vercel env add TURSO_AUTH_TOKEN production\n' +
+      '  # Upstash를 고르는 경우에만:\n' +
+      '  vercel integration add upstash\n' +
+      '  # 아래 두 값은 Turso·Upstash 공통:\n' +
       '  openssl rand -hex 32                  # 쓰기 토큰을 만든다\n' +
       '  vercel env add ACM_RELAY_TOKEN production\n' +
-      '  vercel env add CRON_SECRET production # keepalive cron 인증. 없으면 30일 뒤 아카이브된다\n' +
+      '  vercel env add CRON_SECRET production # keepalive cron 인증\n' +
       '  vercel deploy --prod\n\n' +
       '뜬 뒤 relay_check 에 그 주소를 줘서 릴레이로 답하는지 확인한다.\n' +
       '주소와 쓰기 토큰을 함께 쓸 사람들에게 대역 외로 나눈다 — 채널 비밀과는 다른 값이고, ' +

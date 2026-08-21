@@ -103,6 +103,13 @@ export {
   type UpstashStoreOptions,
 } from './relay/upstash.js'
 export {
+  TursoStore,
+  TursoError,
+  fromEnv as tursoFromEnv,
+  type TursoClient,
+  type TursoStoreOptions,
+} from './relay/turso.js'
+export {
   start as startRelay,
   parseArgs as parseRelayArgs,
   DEFAULT_PORT,
