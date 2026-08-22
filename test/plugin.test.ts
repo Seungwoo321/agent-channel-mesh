@@ -182,8 +182,7 @@ describe('실행 명령', () => {
     // CODEX_THREAD_ID가 MCP와 hook 양쪽에 도달해야 세션별 설정 경로가
     // 일치한다. ACM_CONFIG 기본값을 셸에서 강제로 넣으면 그 신호가 가려진다.
     expect(runnerCommand()).not.toContain('ACM_CONFIG=')
-    expect(runnerCommand()).not.toContain('codex.json')
-    expect(runnerCommand()).not.toContain('config.json')
+    expect(runnerCommand()).toContain('--config-default "$config"')
   })
 
   test('플러그인 루트 기준으로 번들을 가리킨다', () => {

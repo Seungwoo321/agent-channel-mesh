@@ -109,10 +109,10 @@ const BUNDLE_REL = 'dist/acm.js'
  */
 export function runnerCommand(): string {
   return [
-    'if [ -n "${PLUGIN_ROOT:-}" ]; then root="$PLUGIN_ROOT"; agent=codex;',
-    'elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then root="$CLAUDE_PLUGIN_ROOT"; agent=claude;',
+    'if [ -n "${PLUGIN_ROOT:-}" ]; then root="$PLUGIN_ROOT"; agent=codex; config=\'~/.agent-channel-mesh/codex.json\';',
+    'elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then root="$CLAUDE_PLUGIN_ROOT"; agent=claude; config=\'~/.agent-channel-mesh/config.json\';',
     "else printf '{}'; exit 0; fi;",
-    `exec bun "$root/${BUNDLE_REL}"`,
+    `exec bun "$root/${BUNDLE_REL}" --config-default "$config"`,
   ].join(' ')
 }
 
@@ -127,7 +127,8 @@ export function runnerCommand(): string {
  * `async` 는 절대 넣지 않는다 — Codex 가 async 훅을 목록에서 빼 버린다.
  * 근거는 `src/install/hooks.ts` 의 {@link codexHooks} 주석에 있다.
  * 명령에 에이전트를 고정하지 않는 이유는 이 파일을 Claude와 Codex가 함께
- * 읽기 때문이다. Codex가 제공하는 `PLUGIN_ROOT`를 번들 런타임이 감지한다.
+ * 읽기 때문이다. Codex가 제공하는 `PLUGIN_ROOT`를 번들 런타임이 감지하고,
+ * `--config-default`는 세션 환경변수가 없을 때만 fallback으로 사용한다.
  */
 export function pluginHooks(): { hooks: HookMap } {
   const runner = runnerCommand()

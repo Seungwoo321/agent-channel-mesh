@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${PLUGIN_ROOT:-}\" ]; then root=\"$PLUGIN_ROOT\"; agent=codex; elif [ -n \"${CLAUDE_PLUGIN_ROOT:-}\" ]; then root=\"$CLAUDE_PLUGIN_ROOT\"; agent=claude; else printf '{}'; exit 0; fi; exec bun \"$root/dist/acm.js\" hook --event SessionStart --agent \"$agent\"",
+            "command": "if [ -n \"${PLUGIN_ROOT:-}\" ]; then root=\"$PLUGIN_ROOT\"; agent=codex; config='~/.agent-channel-mesh/codex.json'; elif [ -n \"${CLAUDE_PLUGIN_ROOT:-}\" ]; then root=\"$CLAUDE_PLUGIN_ROOT\"; agent=claude; config='~/.agent-channel-mesh/config.json'; else printf '{}'; exit 0; fi; exec bun \"$root/dist/acm.js\" --config-default \"$config\" hook --event SessionStart --agent \"$agent\"",
             "timeout": 10,
             "additionalContextLimit": 12000
           }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${PLUGIN_ROOT:-}\" ]; then root=\"$PLUGIN_ROOT\"; agent=codex; elif [ -n \"${CLAUDE_PLUGIN_ROOT:-}\" ]; then root=\"$CLAUDE_PLUGIN_ROOT\"; agent=claude; else printf '{}'; exit 0; fi; exec bun \"$root/dist/acm.js\" hook --event UserPromptSubmit --agent \"$agent\"",
+            "command": "if [ -n \"${PLUGIN_ROOT:-}\" ]; then root=\"$PLUGIN_ROOT\"; agent=codex; config='~/.agent-channel-mesh/codex.json'; elif [ -n \"${CLAUDE_PLUGIN_ROOT:-}\" ]; then root=\"$CLAUDE_PLUGIN_ROOT\"; agent=claude; config='~/.agent-channel-mesh/config.json'; else printf '{}'; exit 0; fi; exec bun \"$root/dist/acm.js\" --config-default \"$config\" hook --event UserPromptSubmit --agent \"$agent\"",
             "timeout": 10,
             "additionalContextLimit": 12000
           }
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${PLUGIN_ROOT:-}\" ]; then root=\"$PLUGIN_ROOT\"; agent=codex; elif [ -n \"${CLAUDE_PLUGIN_ROOT:-}\" ]; then root=\"$CLAUDE_PLUGIN_ROOT\"; agent=claude; else printf '{}'; exit 0; fi; exec bun \"$root/dist/acm.js\" hook --event PostToolUse --agent \"$agent\"",
+            "command": "if [ -n \"${PLUGIN_ROOT:-}\" ]; then root=\"$PLUGIN_ROOT\"; agent=codex; config='~/.agent-channel-mesh/codex.json'; elif [ -n \"${CLAUDE_PLUGIN_ROOT:-}\" ]; then root=\"$CLAUDE_PLUGIN_ROOT\"; agent=claude; config='~/.agent-channel-mesh/config.json'; else printf '{}'; exit 0; fi; exec bun \"$root/dist/acm.js\" --config-default \"$config\" hook --event PostToolUse --agent \"$agent\"",
             "timeout": 10,
             "additionalContextLimit": 12000
           }
@@ -44,7 +44,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -n \"${PLUGIN_ROOT:-}\" ]; then root=\"$PLUGIN_ROOT\"; agent=codex; elif [ -n \"${CLAUDE_PLUGIN_ROOT:-}\" ]; then root=\"$CLAUDE_PLUGIN_ROOT\"; agent=claude; else printf '{}'; exit 0; fi; exec bun \"$root/dist/acm.js\" hook --event PreToolUse --agent \"$agent\"",
+            "command": "if [ -n \"${PLUGIN_ROOT:-}\" ]; then root=\"$PLUGIN_ROOT\"; agent=codex; config='~/.agent-channel-mesh/codex.json'; elif [ -n \"${CLAUDE_PLUGIN_ROOT:-}\" ]; then root=\"$CLAUDE_PLUGIN_ROOT\"; agent=claude; config='~/.agent-channel-mesh/config.json'; else printf '{}'; exit 0; fi; exec bun \"$root/dist/acm.js\" --config-default \"$config\" hook --event PreToolUse --agent \"$agent\"",
             "timeout": 10,
             "additionalContextLimit": 12000
           }
