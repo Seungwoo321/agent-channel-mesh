@@ -109,10 +109,10 @@ const BUNDLE_REL = 'dist/acm.js'
  */
 export function runnerCommand(): string {
   return [
-    'if [ -n "${PLUGIN_ROOT:-}" ]; then root="$PLUGIN_ROOT"; agent=codex; config=\'~/.agent-channel-mesh/codex.json\';',
-    'elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then root="$CLAUDE_PLUGIN_ROOT"; agent=claude; config=\'~/.agent-channel-mesh/config.json\';',
+    'if [ -n "${PLUGIN_ROOT:-}" ]; then root="$PLUGIN_ROOT"; agent=codex;',
+    'elif [ -n "${CLAUDE_PLUGIN_ROOT:-}" ]; then root="$CLAUDE_PLUGIN_ROOT"; agent=claude;',
     "else printf '{}'; exit 0; fi;",
-    `exec env ACM_CONFIG="\${ACM_CONFIG:-$config}" bun "$root/${BUNDLE_REL}"`,
+    `exec bun "$root/${BUNDLE_REL}"`,
   ].join(' ')
 }
 

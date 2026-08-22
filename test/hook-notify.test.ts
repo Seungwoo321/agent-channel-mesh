@@ -23,7 +23,7 @@ import {
   HOOK_BATCH_LIMIT,
   HOOK_CONTEXT_LIMIT,
 } from '../src/install/notify.js'
-import { CODEX_CONFIG_PATH, DEFAULT_CONFIG_PATH } from '../src/adapter/config.js'
+import { CODEX_CONFIG_PATH, DEFAULT_CONFIG_PATH, configPathFromEnv } from '../src/adapter/config.js'
 import { readTaint } from '../src/policy/taint.js'
 
 let dir: string
@@ -272,6 +272,13 @@ describe('parseConfigPath (§6.4)', () => {
 
   test('Codex 플러그인은 Codex 전용 경로를 기본값으로 쓴다', () => {
     expect(parseConfigPath([], { PLUGIN_ROOT: '/plugin' })).toBe(CODEX_CONFIG_PATH)
+  })
+
+  test('Codex thread id가 있으면 MCP와 같은 세션 경로를 쓴다', () => {
+    const env = { PLUGIN_ROOT: '/plugin', CODEX_THREAD_ID: 'thread-a' }
+    const expected = configPathFromEnv(env)
+    expect(expected).toBeDefined()
+    expect(parseConfigPath([], env)).toBe(expected!)
   })
 
   test('값이 비었거나 다음 플래그면 못 본 것으로 친다', () => {

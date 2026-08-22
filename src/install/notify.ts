@@ -419,9 +419,9 @@ export function parseAgent(
  * 이 훅이 읽을 설정 파일 (§6.4).
  *
  * 우선순위는 `--config` → `ACM_CONFIG` → 세션 ID 기반 경로 → 기본값이다.
- * 플래그가 환경변수를 이기는 이유는 **설치기가 쓰는 쪽이 플래그**이기
- * 때문이다 — 에이전트가 물려주는 환경에 `ACM_CONFIG` 가 남아 있다고 해서,
- * 설치기가 그 에이전트용으로 못 박아 둔 신원이 뒤집히면 안 된다.
+ * `--config` 는 직접 실행자가 명시적으로 고정한 값이고, 생성된 플러그인 hook
+ * runner 는 이 플래그를 넣지 않는다. 따라서 Codex MCP와 hook 모두 호스트가
+ * 전달한 세션 ID에서 같은 경로를 고른다.
  */
 export function parseConfigPath(
   argv: readonly string[],

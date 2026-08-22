@@ -178,6 +178,14 @@ describe('실행 명령', () => {
     expect(runnerCommand()).not.toContain('latest')
   })
 
+  test('hook runner가 Codex 세션 환경을 고정 경로로 덮지 않는다', () => {
+    // CODEX_THREAD_ID가 MCP와 hook 양쪽에 도달해야 세션별 설정 경로가
+    // 일치한다. ACM_CONFIG 기본값을 셸에서 강제로 넣으면 그 신호가 가려진다.
+    expect(runnerCommand()).not.toContain('ACM_CONFIG=')
+    expect(runnerCommand()).not.toContain('codex.json')
+    expect(runnerCommand()).not.toContain('config.json')
+  })
+
   test('플러그인 루트 기준으로 번들을 가리킨다', () => {
     // 설치 경로는 생성 시점에 알 수 없다. 절대경로를 박으면 만든 사람
     // 기계에서만 돈다.
