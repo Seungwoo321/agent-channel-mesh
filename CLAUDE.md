@@ -94,7 +94,7 @@
 - 훅 이벤트 정의는 `src/install/hooks.ts` 의 `HOOK_EVENTS` **한 곳**에만 있다. 플러그인 쪽에 따로 적으면 설치 경로마다 알림이 갈린다.
 - **소스를 고쳤으면 `bun run plugin` 으로 번들을 다시 뽑는다.** 플러그인은 클론만 되고 의존성 설치가 없어 소스 경로로는 못 돈다 — 도는 것은 커밋된 `plugin/dist/acm.js` 하나다. 다시 뽑지 않으면 **고친 적 없는 코드가 배포되고**, 레포를 읽어서는 드러나지 않는다. 그래서 테스트가 바이트로 대조한다.
 - **매니페스트에 `hooks`·`skills` 를 적지 않는다.** 두 로더 모두 플러그인 루트의 `hooks/hooks.json` 과 `skills/` 를 관례로 집는다. 적어 두면 Claude 가 같은 파일을 두 번 읽고 **플러그인 전체를 못 싣는다** — `Duplicate hooks file detected`. 훅도 스킬도 MCP 서버도 통째로 사라진다. `plugin validate --strict` 는 통과하고 `plugin details` 는 훅 4개·스킬 1개를 그대로 세어 보여주고 `mcp list` 는 `✔ Connected` 다. **`claude plugin list` 만** `✘ failed to load` 라고 말한다 — 설치 뒤 확인은 이 명령으로 한다.
-- **MCP 실행 형태를 두 에이전트에 같은 모양으로 적지 않는다.** 훅 `command` 는 셸에서 Codex의 `PLUGIN_ROOT`와 Claude의 `CLAUDE_PLUGIN_ROOT`를 선택하고, MCP `args` 는 Claude만 변수를 치환한다 — Codex는 치환 없이 `cwd`만 플러그인 루트 기준으로 푼다. 그래서 Claude는 변수 경로, Codex는 `cwd: "."` + 상대 경로를 쓴다. Codex는 `codex.json`, Claude는 `config.json`을 쓴다.
+- **MCP 실행 형태를 두 에이전트에 같은 모양으로 적지 않는다.** 훅 `command` 는 셸에서 Codex의 `PLUGIN_ROOT`와 Claude의 `CLAUDE_PLUGIN_ROOT`를 선택하고, MCP `args` 는 Claude만 변수를 치환한다 — Codex는 치환 없이 `cwd`만 플러그인 루트 기준으로 푼다. 그래서 Claude는 변수 경로, Codex는 `cwd: "."` + 상대 경로를 쓴다. Codex는 `codex.json`을 기본으로 쓰되 `ACM_CONFIG`·`ACM_SESSION_ID`·`CODEX_THREAD_ID`를 `env_vars`로 전달해 세션별 경로를 고르고, Claude는 `config.json`을 기본으로 쓴다.
 - **설정이 없을 때 죽지 않는다.** 설치 경로가 캐시 경로라 사람에게 줄 명령이 없으므로, 설정이 없으면 `setup` 툴 하나만 가진 서버(`src/adapter/setup.ts`)가 뜬다. 이걸 `serve` 안으로 합치지 않는다 — `serve` 는 온전한 노드를 요구해야 한다.
 - **셋업 스킬(`plugin/skills/mesh-setup/SKILL.md`)만은 손으로 쓴다.** 산문이라 코드에서 파생되는 값이 없고, 생성기 문자열에 가두면 고치는 사람이 마크다운 대신 TypeScript 를 편집하게 된다. 대신 어긋남이 실제로 나는 자리 — 두 로더가 요구하는 프론트매터, 본문이 부르라고 적은 툴 이름·설정 경로·권한 등급 — 를 `test/plugin.test.ts` 가 코드와 대조한다. 매니페스트의 `skills` 필드는 여전히 생성기 소유다.
 

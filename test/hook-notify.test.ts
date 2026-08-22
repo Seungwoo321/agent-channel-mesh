@@ -223,6 +223,32 @@ describe('프로세스로 돌려도 세션을 세우지 않는다', () => {
     // 서브프로세스를 새로 띄우는 테스트다 — 전체 스위트와 같이 돌 때는 런타임
     // 기동만으로 기본 제한(5초)을 넘긴다. 기다리는 시간을 넉넉히 준다.
   }, 30_000)
+
+  test('PostToolUse 는 큰 stdin payload를 끝까지 소비한다', async () => {
+    const proc = Bun.spawn(
+      [
+        'bun',
+        'run',
+        join(import.meta.dir, '..', 'src', 'install', 'notify.ts'),
+        '--event',
+        'PostToolUse',
+        '--agent',
+        'codex',
+      ],
+      {
+        env: { ...process.env, ACM_CONFIG: join(dir, '없는파일.json') },
+        stdin: 'pipe',
+        stdout: 'pipe',
+        stderr: 'pipe',
+      },
+    )
+    proc.stdin.write(JSON.stringify({ tool_name: 'Read', tool_response: 'x'.repeat(512 * 1024) }))
+    proc.stdin.end()
+
+    const [code, out] = await Promise.all([proc.exited, new Response(proc.stdout).text()])
+    expect(code).toBe(0)
+    expect(JSON.parse(out)).toEqual({})
+  }, 30_000)
 })
 
 /**

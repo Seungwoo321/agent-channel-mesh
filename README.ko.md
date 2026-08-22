@@ -109,19 +109,28 @@ ACM_POLL_MAX_MS=300000 # 유휴·오류 시 최대 간격 5분(기본값)
 
 ## 세션마다 다른 신원
 
-플러그인 정의가 적는 것은 그 에이전트의 **기본** 신원이지 못 박은 값이 아니다. 그래서 세션은
-`ACM_CONFIG` 로 다른 설정 파일을 고를 수 있다.
+대화 맥락과 로컬 메시지 저장소는 세션 단위로 분리한다. 플러그인 정의가 적는 것은 에이전트의
+기본 신원이고, 세션은 `ACM_CONFIG` 로 안정적인 설정 파일을 고를 수 있다.
 
 ```bash
 ACM_CONFIG=~/.agent-channel-mesh/codex-ticket-1234.json codex
 ```
 
-병렬 워크트리가 이것을 필요로 한다. 릴레이 수신함은 지문 단위이고 조회는 **가져가며 비우는**
-방식이라, 지문 하나를 여러 워크트리가 공유하면 먼저 집은 세션이 남의 말을 가져가고 특정
-워크트리만 지목해 보낼 수도 없다. 워크트리마다 설정 파일을 따로 주고, 그 작업이 끝나면 폐기한다.
+Codex 플러그인은 `ACM_CONFIG`·`ACM_SESSION_ID`·`CODEX_THREAD_ID`를 MCP 프로세스에 전달하도록
+선언한다. 호스트가 `CODEX_THREAD_ID`를 넘기면 어댑터가 해시한 세션별 설정 경로를 자동으로 만든다.
+다만 이 환경변수를 플러그인 MCP까지 넘기지 않는 Codex 버전에서는 세션마다 명시적 경로로 시작한다.
 
-우선순위는 `--config`(설치기 등이 못 박은 값) → `ACM_CONFIG` → `--config-default`(플러그인 정의가
-선언한 기본값) → `~/.agent-channel-mesh/config.json` 이다. `~` 는 어댑터가 직접 펴므로 그대로 적어도
+```bash
+ACM_CONFIG=~/.agent-channel-mesh/sessions/codex-ticket-1234.json codex
+```
+
+Claude Code도 같은 `ACM_CONFIG` 형식을 쓸 수 있다. 릴레이 수신함은 지문 단위이고 조회는
+**가져가며 비우는** 방식이라 세션끼리 신원을 공유하면 안 된다. 세션마다 설정 파일을 따로 주고,
+그 세션이 끝나면 폐기한다.
+
+우선순위는 `--config`(설치기 등이 못 박은 값) → `ACM_CONFIG` → `CODEX_THREAD_ID`·
+`CLAUDE_SESSION_ID`·`ACM_SESSION_ID`에서 만든 세션 경로 → `--config-default`(플러그인 정의가
+선언한 기본값) → `~/.agent-channel-mesh/config.json` 이다. `~`는 어댑터가 직접 펴므로 그대로 적어도
 된다. 값은 **MCP 프로세스가 뜰 때** 읽으므로 세션을 띄우기 전에 정한다 — 도는 세션 안에서 바꿔도
 반영되지 않는다.
 

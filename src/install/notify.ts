@@ -19,6 +19,7 @@
  * 어댑터가 이미 전달 표시를 찍어 두므로 여기서는 아무것도 안 나온다.
  * 주입이 실패했거나 세션이 놓쳤을 때만 뜬다.
  */
+import { fstatSync } from 'node:fs'
 import {
   loadConfig,
   storeOptionsOf,
@@ -26,6 +27,7 @@ import {
   expandHome,
   CODEX_CONFIG_PATH,
   DEFAULT_CONFIG_PATH,
+  configPathFromEnv,
 } from '../adapter/config.js'
 import { MessageStore, type StoredMessage } from '../store/store.js'
 import { renderBundle } from '../adapter/bundle.js'
@@ -77,6 +79,9 @@ const KNOWN_EVENTS = new Set([
   'PreCompact',
   'Stop',
 ])
+
+/** 호스트가 stdin 에 페이로드를 쓰는 비게이트 이벤트. */
+const PAYLOAD_EVENTS = new Set(['SessionStart', 'UserPromptSubmit', 'PostToolUse'])
 
 /**
  * 권한을 강제하는 이벤트 (§8.3). 여기서는 **드레인하지 않는다** — 막히는
@@ -336,15 +341,37 @@ export function toolNameOf(raw: string): string | undefined {
   return name
 }
 
+/** 직접 실행할 때의 stdin — Bun 은 `process.stdin.isTTY` 를 채우지 않는다. */
+function hasHookInput(): boolean {
+  if (process.stdin.isTTY === true) return false
+  try {
+    // 터미널·/dev/null 같은 character device 에서 직접 실행한 훅은
+    // 페이로드가 없다. 이 검사를 하지 않으면 Bun.stdin.text() 가 끝날 때까지
+    // 직접 실행과 기존 테스트가 2초를 기다린다.
+    return !fstatSync(0).isCharacterDevice()
+  } catch {
+    // fd 를 확인할 수 없는 호스트에서는 기존의 안전한 경로를 유지한다.
+    return true
+  }
+}
+
 /**
  * 훅 페이로드를 읽는다. 못 읽으면 `undefined`.
  *
- * 상한을 둔다 — stdin 이 안 닫히면 툴 호출마다 훅이 매달리고, 그건 알림
- * 하나가 세션을 세우는 사고다. 시간이 지나면 "모르는 호출"로 떨어지고,
- * 오염 중에는 그것이 거부다.
+ * Codex·Claude 는 hook 명령의 stdin 에 tool payload 를 쓴다. 이 프로세스가
+ * 그것을 읽지 않고 먼저 끝나면 큰 payload 가 parent pipe 를 채워 Codex 쪽
+ * hook 실행 자체가 timeout 된다. 따라서 비게이트 이벤트도 반드시 여기서
+ * 끝까지 소비한다.
+ *
+ * 권한 게이트는 상한을 둔다 — stdin 이 안 닫히면 툴 호출마다 훅이 매달리고,
+ * 그건 알림 하나가 세션을 세우는 사고다. 반대로 비게이트 이벤트는 호스트가
+ * 보낸 payload를 **끝까지** 소비해야 parent pipe가 막히지 않으므로 호출자가
+ * timeout을 생략할 수 있다. 단, 직접 실행한 character device 는 위에서 즉시
+ * 건너뛴다.
  */
-async function readPayload(timeoutMs = 2000): Promise<string | undefined> {
-  if (process.stdin.isTTY === true) return undefined
+async function readPayload(timeoutMs: number | undefined = 2000): Promise<string | undefined> {
+  if (!hasHookInput()) return undefined
+  if (timeoutMs === undefined) return await Bun.stdin.text()
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<undefined>(resolve => {
     timer = setTimeout(() => resolve(undefined), timeoutMs)
@@ -391,10 +418,10 @@ export function parseAgent(
 /**
  * 이 훅이 읽을 설정 파일 (§6.4).
  *
- * 우선순위는 `--config` → `ACM_CONFIG` → 기본값이다. 플래그가 환경변수를
- * 이기는 이유는 **설치기가 쓰는 쪽이 플래그**이기 때문이다 — 에이전트가
- * 물려주는 환경에 `ACM_CONFIG` 가 남아 있다고 해서, 설치기가 그 에이전트용
- * 으로 못 박아 둔 신원이 뒤집히면 안 된다.
+ * 우선순위는 `--config` → `ACM_CONFIG` → 세션 ID 기반 경로 → 기본값이다.
+ * 플래그가 환경변수를 이기는 이유는 **설치기가 쓰는 쪽이 플래그**이기
+ * 때문이다 — 에이전트가 물려주는 환경에 `ACM_CONFIG` 가 남아 있다고 해서,
+ * 설치기가 그 에이전트용으로 못 박아 둔 신원이 뒤집히면 안 된다.
  */
 export function parseConfigPath(
   argv: readonly string[],
@@ -403,8 +430,8 @@ export function parseConfigPath(
   const i = argv.indexOf('--config')
   const flag = i >= 0 ? argv[i + 1] : undefined
   if (flag !== undefined && flag !== '' && !flag.startsWith('--')) return flag
-  const fromEnv = env.ACM_CONFIG?.trim()
-  if (fromEnv !== undefined && fromEnv !== '') return fromEnv
+  const fromEnv = configPathFromEnv(env)
+  if (fromEnv !== undefined) return fromEnv
   return env.PLUGIN_ROOT?.trim() === '' || env.PLUGIN_ROOT === undefined
     ? DEFAULT_CONFIG_PATH
     : CODEX_CONFIG_PATH
@@ -448,6 +475,12 @@ export const SETUP_HINT =
 async function run(argv: readonly string[], agent: HookAgent): Promise<void> {
   const path = parseConfigPath(argv)
   const event = parseEvent(argv)
+
+  // 권한 게이트는 taint 가 있을 때만 페이로드를 읽어 판정한다. 그 외의
+  // 이벤트는 저장소를 열기 전에도 먼저 stdin 을 소비해야 한다 — 설정이
+  // 아직 없거나 미전달 메시지가 없어도 parent 가 보낸 큰 payload 는 drain
+  // 해야 한다.
+  if (event !== GATE_EVENT && PAYLOAD_EVENTS.has(event)) await readPayload(undefined)
 
   // 설정이 없는 것은 첫 실행이다(§11.1). 조용히 지나가면 훅이 깔린 줄도
   // 모른 채 며칠이 가므로, 시작할 때 한 번만 알린다. 파일이 있는데 못 읽는

@@ -15,6 +15,9 @@ import {
   expandHome,
   storeOptionsOf,
   identityOf,
+  configPathFromEnv,
+  SESSION_CONFIG_DIR,
+  CODEX_CONFIG_PATH,
   type Config,
 } from '../src/adapter/config.js'
 import { DEFAULT_STORE_DIR } from '../src/store/store.js'
@@ -231,6 +234,30 @@ describe('저장 위치는 신원에서 파생한다 (§6.3)', () => {
   })
 })
 
+describe('세션 설정 경로는 세션마다 파생한다', () => {
+  test('Codex thread id가 있으면 Codex 세션 경로를 쓴다', () => {
+    const path = configPathFromEnv({ CODEX_THREAD_ID: 'thread-a', PLUGIN_ROOT: '/plugin' })
+    expect(path).toMatch(new RegExp(`^${SESSION_CONFIG_DIR}/codex/[0-9a-f]{32}\\.json$`))
+    expect(path).not.toBe(CODEX_CONFIG_PATH)
+  })
+
+  test('세션 ID가 다르면 설정 경로도 다르다', () => {
+    expect(configPathFromEnv({ CODEX_THREAD_ID: 'thread-a' })).not.toBe(
+      configPathFromEnv({ CODEX_THREAD_ID: 'thread-b' }),
+    )
+  })
+
+  test('명시한 ACM_CONFIG가 자동 경로보다 우선한다', () => {
+    expect(
+      configPathFromEnv({ ACM_CONFIG: '/explicit.json', CODEX_THREAD_ID: 'thread-a' }),
+    ).toBe('/explicit.json')
+  })
+
+  test('세션 ID가 없으면 기본 경로 선택을 호출자에게 맡긴다', () => {
+    expect(configPathFromEnv({})).toBeUndefined()
+  })
+})
+
 describe('파일 로드', () => {
   const read = async () => JSON.stringify(sample())
 
@@ -336,6 +363,16 @@ describe('인자', () => {
       delivery: 'inbox',
       config: '/e.json',
     })
+  })
+
+  test('Codex thread id가 있으면 매니페스트 기본값보다 세션 경로가 우선한다', () => {
+    const args = parseArgs(
+      ['--delivery', 'inbox', '--config-default', CODEX_CONFIG_PATH],
+      { CODEX_THREAD_ID: 'thread-a', PLUGIN_ROOT: '/plugin' },
+    )
+    const expected = configPathFromEnv({ CODEX_THREAD_ID: 'thread-a', PLUGIN_ROOT: '/plugin' })
+    expect(expected).toBeDefined()
+    expect(args.config).toBe(expected!)
   })
 
   // 설정 경로의 우선순위 (§6.4) — `--config` → ACM_CONFIG → `--config-default` → 기본값.

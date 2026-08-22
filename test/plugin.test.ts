@@ -61,7 +61,7 @@ async function committed(path: string): Promise<unknown> {
   return await Bun.file(path).json()
 }
 
-type McpServer = { command: string; args: string[]; cwd?: string }
+type McpServer = { command: string; args: string[]; cwd?: string; env_vars?: string[] }
 const serverOf = (manifest: unknown): McpServer =>
   (manifest as { mcpServers: Record<string, McpServer> }).mcpServers[PACKAGE_NAME]!
 
@@ -277,6 +277,7 @@ describe('MCP 서버 — 번들에 닿는 길이 에이전트마다 다르다', 
         '~/.agent-channel-mesh/codex.json',
       ],
       cwd: '.',
+      env_vars: ['ACM_CONFIG', 'ACM_SESSION_ID', 'CODEX_THREAD_ID', 'ACM_POLL_MS', 'ACM_POLL_MAX_MS'],
     })
   })
 
@@ -286,6 +287,16 @@ describe('MCP 서버 — 번들에 닿는 길이 에이전트마다 다르다', 
     const args = serverOf(codexManifest(version)).args
     expect(args).not.toContain('--config')
     expect(args).toContain('--config-default')
+  })
+
+  test('Codex MCP에 세션·설정 환경을 명시적으로 전달한다', () => {
+    expect(serverOf(codexManifest(version)).env_vars).toEqual([
+      'ACM_CONFIG',
+      'ACM_SESSION_ID',
+      'CODEX_THREAD_ID',
+      'ACM_POLL_MS',
+      'ACM_POLL_MAX_MS',
+    ])
   })
 
   test('Codex 인자에 변수를 넣지 않는다', () => {

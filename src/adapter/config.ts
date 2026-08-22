@@ -18,12 +18,49 @@ import { RelayClient } from '../relay/client.js'
 import { DEFAULT_STORE_DIR, type Axis, type StoreOptions } from '../store/store.js'
 import { fingerprint, parseKey, toHex, toKey } from '../identity/fingerprint.js'
 import { buildPolicy, GRANTS } from '../policy/authority.js'
+import { sha256 } from '@noble/hashes/sha2.js'
 
 /** 기본 설정 위치. `ACM_CONFIG` 로 덮어쓴다. */
 export const DEFAULT_CONFIG_PATH = '~/.agent-channel-mesh/config.json'
 
 /** Codex 플러그인 훅·MCP가 쓰는 설정 위치. Claude 설정과 저장소를 분리한다. */
 export const CODEX_CONFIG_PATH = '~/.agent-channel-mesh/codex.json'
+
+/** 세션 ID를 전달받았을 때 쓸 자동 격리 위치. */
+export const SESSION_CONFIG_DIR = '~/.agent-channel-mesh/sessions'
+
+/** 세션 ID 자체를 경로에 쓰지 않는다 — 호스트 값이 경로 구분자를 포함할 수 있다. */
+const SESSION_KEY_BYTES = 16
+
+/**
+ * 런타임 환경에서 설정 경로를 고른다.
+ *
+ * `ACM_CONFIG` 는 사용자가 의도적으로 고른 경로라 가장 먼저 본다. Codex가
+ * 세션 ID를 MCP 프로세스에 전달하는 버전에서는 `CODEX_THREAD_ID` 로 세션별
+ * 경로를 자동 파생하고, Claude Code나 외부 런처는 `CLAUDE_SESSION_ID`·
+ * `ACM_SESSION_ID` 를 사용할 수 있다. 세션 ID가 없는 구버전 호스트에서는
+ * 기존 에이전트 기본값으로 돌아가되, 플러그인 매니페스트의 `env_vars` 가
+ * 다음 실행에서 이 경로를 받을 수 있게 한다.
+ */
+export function configPathFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
+  const explicit = env.ACM_CONFIG?.trim()
+  if (explicit !== undefined && explicit !== '') return explicit
+
+  const session = env.CODEX_THREAD_ID?.trim()
+    ? { agent: 'codex', id: env.CODEX_THREAD_ID.trim() }
+    : env.CLAUDE_SESSION_ID?.trim()
+      ? { agent: 'claude', id: env.CLAUDE_SESSION_ID.trim() }
+      : env.ACM_SESSION_ID?.trim()
+        ? { agent: env.PLUGIN_ROOT === undefined ? 'claude' : 'codex', id: env.ACM_SESSION_ID.trim() }
+        : undefined
+  if (session === undefined) return undefined
+
+  const digest = sha256(new TextEncoder().encode(`${session.agent}:${session.id}`))
+  const key = Array.from(digest.slice(0, SESSION_KEY_BYTES), b => b.toString(16).padStart(2, '0')).join('')
+  return `${SESSION_CONFIG_DIR}/${session.agent}/${key}.json`
+}
 
 /** 설정 파일의 최대 허용 권한. 그룹·타인에게 한 비트도 열려 있으면 안 된다. */
 const MAX_MODE = 0o600

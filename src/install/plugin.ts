@@ -191,6 +191,10 @@ export function pluginMcp(agent: 'claude' | 'codex'): unknown {
           command: 'bun',
           args: [BUNDLE_REL, '--delivery', 'inbox', '--config-default', CODEX_CONFIG_PATH],
           cwd: '.',
+          // Codex does not inherit arbitrary launcher variables into plugin MCP
+          // processes. Explicitly forward the session/config contract so each
+          // session can select its own identity and polling budget.
+          env_vars: ['ACM_CONFIG', 'ACM_SESSION_ID', 'CODEX_THREAD_ID', 'ACM_POLL_MS', 'ACM_POLL_MAX_MS'],
         }
   return { mcpServers: { [PACKAGE_NAME]: server } }
 }

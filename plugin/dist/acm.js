@@ -14610,6 +14610,19 @@ function expandHome(path, home = process.env.HOME ?? "") {
 // src/adapter/config.ts
 var DEFAULT_CONFIG_PATH = "~/.agent-channel-mesh/config.json";
 var CODEX_CONFIG_PATH = "~/.agent-channel-mesh/codex.json";
+var SESSION_CONFIG_DIR = "~/.agent-channel-mesh/sessions";
+var SESSION_KEY_BYTES = 16;
+function configPathFromEnv(env = process.env) {
+  const explicit = env.ACM_CONFIG?.trim();
+  if (explicit !== undefined && explicit !== "")
+    return explicit;
+  const session = env.CODEX_THREAD_ID?.trim() ? { agent: "codex", id: env.CODEX_THREAD_ID.trim() } : env.CLAUDE_SESSION_ID?.trim() ? { agent: "claude", id: env.CLAUDE_SESSION_ID.trim() } : env.ACM_SESSION_ID?.trim() ? { agent: env.PLUGIN_ROOT === undefined ? "claude" : "codex", id: env.ACM_SESSION_ID.trim() } : undefined;
+  if (session === undefined)
+    return;
+  const digest = sha256(new TextEncoder().encode(`${session.agent}:${session.id}`));
+  const key = Array.from(digest.slice(0, SESSION_KEY_BYTES), (b) => b.toString(16).padStart(2, "0")).join("");
+  return `${SESSION_CONFIG_DIR}/${session.agent}/${key}.json`;
+}
 var MAX_MODE = 384;
 function storeOptionsOf(store, identity) {
   const base = store?.dir ?? DEFAULT_STORE_DIR;
@@ -23452,6 +23465,7 @@ async function serveSetup(options) {
 }
 
 // src/install/notify.ts
+import { fstatSync } from "fs";
 var HOOK_BATCH_LIMIT = 20;
 var HOOK_CONTEXT_LIMIT = 8000;
 var NOTICE_RESERVE = 120;
@@ -23463,6 +23477,7 @@ var KNOWN_EVENTS = new Set([
   "PreCompact",
   "Stop"
 ]);
+var PAYLOAD_EVENTS = new Set(["SessionStart", "UserPromptSubmit", "PostToolUse"]);
 var GATE_EVENT = "PreToolUse";
 function hookOutputOf(agent, hookSpecificOutput) {
   const context = hookSpecificOutput === undefined ? {} : { hookSpecificOutput };
@@ -23582,9 +23597,20 @@ function toolNameOf(raw) {
     return;
   return name;
 }
-async function readPayload(timeoutMs = 2000) {
+function hasHookInput() {
   if (process.stdin.isTTY === true)
+    return false;
+  try {
+    return !fstatSync(0).isCharacterDevice();
+  } catch {
+    return true;
+  }
+}
+async function readPayload(timeoutMs = 2000) {
+  if (!hasHookInput())
     return;
+  if (timeoutMs === undefined)
+    return await Bun.stdin.text();
   let timer;
   const timeout = new Promise((resolve) => {
     timer = setTimeout(() => resolve(undefined), timeoutMs);
@@ -23619,8 +23645,8 @@ function parseConfigPath(argv, env = process.env) {
   const flag = i >= 0 ? argv[i + 1] : undefined;
   if (flag !== undefined && flag !== "" && !flag.startsWith("--"))
     return flag;
-  const fromEnv = env.ACM_CONFIG?.trim();
-  if (fromEnv !== undefined && fromEnv !== "")
+  const fromEnv = configPathFromEnv(env);
+  if (fromEnv !== undefined)
     return fromEnv;
   return env.PLUGIN_ROOT?.trim() === "" || env.PLUGIN_ROOT === undefined ? DEFAULT_CONFIG_PATH : CODEX_CONFIG_PATH;
 }
@@ -23639,6 +23665,8 @@ var SETUP_HINT = "agent-channel-mesh is installed but has no identity yet. " + "
 async function run(argv, agent) {
   const path = parseConfigPath(argv);
   const event = parseEvent(argv);
+  if (event !== GATE_EVENT && PAYLOAD_EVENTS.has(event))
+    await readPayload(undefined);
   if (!await Bun.file(expandHome2(path)).exists()) {
     const out2 = event === "SessionStart" ? hookOutputOf(agent, { hookEventName: event, additionalContext: SETUP_HINT }) : pass(agent);
     process.stdout.write(JSON.stringify(out2));
@@ -23685,8 +23713,8 @@ function parseArgs(argv, env = {}) {
   let delivery = env.ACM_DELIVERY;
   let pinnedConfig;
   let defaultConfig = DEFAULT_CONFIG_PATH;
-  const envConfig = env.ACM_CONFIG?.trim();
-  const resolveConfig = () => pinnedConfig ?? (envConfig !== undefined && envConfig !== "" ? envConfig : defaultConfig);
+  const envConfig = configPathFromEnv(env);
+  const resolveConfig = () => pinnedConfig ?? (envConfig !== undefined ? envConfig : defaultConfig);
   let command = "serve";
   let relay;
   let label;

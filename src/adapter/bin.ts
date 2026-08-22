@@ -13,7 +13,14 @@
  *
  * stdout 은 MCP 프레이밍이 쓴다. 사람에게 하는 말은 전부 stderr 로 나간다.
  */
-import { loadConfig, buildNode, storeOptionsOf, expandHome, DEFAULT_CONFIG_PATH } from './config.js'
+import {
+  loadConfig,
+  buildNode,
+  storeOptionsOf,
+  expandHome,
+  DEFAULT_CONFIG_PATH,
+  configPathFromEnv,
+} from './config.js'
 import { serve, type Delivery } from './server.js'
 import { serveSetup } from './setup.js'
 import { MessageStore } from '../store/store.js'
@@ -96,9 +103,11 @@ export function parseArgs(argv: readonly string[], env: Record<string, string | 
   // 마지막에 우선순위로 접는다. 한 변수에 덮어쓰면 인자 순서가 우선순위를 흔든다.
   let pinnedConfig: string | undefined
   let defaultConfig = DEFAULT_CONFIG_PATH
-  const envConfig = env.ACM_CONFIG?.trim()
+  // ACM_CONFIG 가 있으면 그대로 쓰고, Codex/Claude 가 세션 ID를 넘기면
+  // 세션별 경로를 자동 파생한다. 매니페스트의 --config-default 는 그 다음이다.
+  const envConfig = configPathFromEnv(env)
   const resolveConfig = (): string =>
-    pinnedConfig ?? (envConfig !== undefined && envConfig !== '' ? envConfig : defaultConfig)
+    pinnedConfig ?? (envConfig !== undefined ? envConfig : defaultConfig)
   let command: Command = 'serve'
   let relay: string | undefined
   let label: string | undefined

@@ -111,22 +111,31 @@ Updating the plugin does not replace MCP processes that are already running. Aft
 
 ## One identity per session
 
-The plugin manifest names the agent's **default** identity, not a pinned one, so a session can pick a
-different config file with `ACM_CONFIG`:
+Conversation state and the local message store are session-scoped. The plugin manifest names the
+agent's default identity, while `ACM_CONFIG` can select a stable config file for a session:
 
 ```bash
 ACM_CONFIG=~/.agent-channel-mesh/codex-ticket-1234.json codex
 ```
 
-Parallel git worktrees need this. A relay inbox is keyed by fingerprint and reading it **removes**
-the envelopes, so two worktrees sharing one identity steal each other's messages, and no sender can
-address one worktree in particular. Give each worktree its own config file, and discard it when that
-work ends.
+The Codex plugin declares `ACM_CONFIG`, `ACM_SESSION_ID`, and `CODEX_THREAD_ID` for forwarding to its
+MCP process. When the host provides `CODEX_THREAD_ID`, the adapter derives a hashed session config path
+automatically. On Codex versions that do not forward these variables to plugin MCP servers, launch each
+session with an explicit path:
 
-Precedence is `--config` (pinned, e.g. by the installer) → `ACM_CONFIG` → `--config-default`
-(what the plugin manifest declares) → `~/.agent-channel-mesh/config.json`. The adapter expands `~`
-itself, so quoting the value is safe. The value is read **when the MCP process starts** — set it
-before launching the session; changing it inside a running session has no effect.
+```bash
+ACM_CONFIG=~/.agent-channel-mesh/sessions/codex-ticket-1234.json codex
+```
+
+Claude Code can use the same `ACM_CONFIG` form. A relay inbox is keyed by fingerprint and reading it
+**removes** the envelopes, so sessions must not share an identity. Give each session its own config
+file, and discard it when that session ends.
+
+Precedence is `--config` (pinned, e.g. by the installer) → `ACM_CONFIG` → a session path derived from
+`CODEX_THREAD_ID`, `CLAUDE_SESSION_ID`, or `ACM_SESSION_ID` → `--config-default` (what the plugin
+manifest declares) → `~/.agent-channel-mesh/config.json`. The adapter expands `~` itself, so quoting
+the value is safe. The value is read **when the MCP process starts** — set it before launching the
+session; changing it inside a running session has no effect.
 
 A config file that does not exist yet is not an error: the server that comes up has a single `setup`
 tool, which creates the identity at that path. Restart the session afterwards to get the full node.
