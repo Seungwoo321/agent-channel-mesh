@@ -49,7 +49,8 @@ export const CHANNELS_TOOL: ToolSpec = {
  *
  * 저장소는 보관 기한 안의 전부를 들고 있으므로(§6.3) 상한이 없으면 며칠치
  * 대화 전문이 한 툴 응답에 실린다 — §6 이 막으려는 비용 문제 그대로다.
- * 최신 쪽을 남긴다(`MessageStore#read`).
+ * 실제 선택은 `selectInboxMessages`가 수신 방향과 미읽음 상태를 함께 고려해
+ * 결정한다.
  */
 export const INBOX_LIMIT = 50
 
@@ -116,6 +117,38 @@ export interface HandlerContext {
   readonly store: MessageStore
   /** `inbox` 툴을 노출한 어댑터만 참이다. 아니면 툴이 오류를 돌려준다. */
   readonly hasInbox?: boolean
+}
+
+/**
+ * 수신함에 표시할 메시지를 결정한다.
+ *
+ * 저장소의 `read(channelId, limit)` 는 발신과 수신을 구분하지 않고 최신
+ * 꼬리를 자른다. 그 결과 내가 보낸 최신 메시지가 `limit`을 소비해, 더
+ * 오래된 수신 메시지가 응답에서 사라질 수 있다. 이 선택기는 방향을 먼저
+ * 좁힌 다음 미읽음을 우선하고, 남은 자리에 최신 읽은 수신을 채운다.
+ *
+ * 미읽음이 `limit`보다 많으면 최신 미읽음부터 보인다. 나머지는 다음
+ * `inbox` 호출에서 계속 미읽음으로 남아 있으므로, 발신이나 이미 읽은
+ * 메시지가 미읽음을 밀어내지 않는다. 반환 순서는 렌더러와 같은 시간순
+ * 규칙을 써서 입력 순서에 기대지 않는다.
+ */
+export function selectInboxMessages(
+  messages: readonly StoredMessage[],
+  limit: number,
+): StoredMessage[] {
+  const count = Number.isSafeInteger(limit) && limit > 0 ? limit : 0
+  if (count === 0) return []
+
+  const incoming = messages.filter(m => m.direction === 'in')
+  if (incoming.length <= count) return incoming.slice().sort(compareStoredMessages)
+
+  const unread = incoming.filter(m => !m.delivered)
+  const delivered = incoming.filter(m => m.delivered)
+  const unreadToShow = unread.slice(-count)
+  const deliveredSlots = Math.max(0, count - unreadToShow.length)
+  const selected = [...unreadToShow, ...delivered.slice(-deliveredSlots)]
+
+  return selected.sort(compareStoredMessages)
 }
 
 /**
@@ -238,9 +271,7 @@ async function handleInbox(
   const ids = channelId ? [channelId] : await ctx.store.channels()
 
   const shown: StoredMessage[] = []
-  for (const id of ids) {
-    for (const m of await ctx.store.read(id, limit)) if (m.direction === 'in') shown.push(m)
-  }
+  for (const id of ids) shown.push(...selectInboxMessages(await ctx.store.read(id), limit))
   if (shown.length === 0) return { text: '새 메시지가 없다.' }
 
   // 이미 전달된 것도 포함해 오염을 찍는다 (§8.3) — 지금 이 호출로 그 말이
@@ -263,4 +294,9 @@ function str(v: unknown): string {
 /** 1 이상의 정수만 받는다. 어긋나면 기본값 — 툴 인자로 저장소를 죽이지 않는다. */
 function intArg(v: unknown, fallback: number): number {
   return typeof v === 'number' && Number.isInteger(v) && v >= 1 ? v : fallback
+}
+
+/** 저장소와 같은 시간순 규칙으로 선택 결과를 안정화한다. */
+function compareStoredMessages(a: StoredMessage, b: StoredMessage): number {
+  return a.sentAt - b.sentAt || a.storedAt - b.storedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
 }

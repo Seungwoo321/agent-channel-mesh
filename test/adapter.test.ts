@@ -19,7 +19,7 @@ import { createIdentity, type Identity } from '../src/identity/keys.js'
 import { Channel } from '../src/channel/channel.js'
 import { MeshNode, type Inbound } from '../src/node/node.js'
 import { MessageStore, type NewMessage, type StoredMessage } from '../src/store/store.js'
-import { callTool } from '../src/adapter/tools.js'
+import { callTool, selectInboxMessages } from '../src/adapter/tools.js'
 import { ClaudeAdapter, CAPABILITIES, INSTRUCTIONS } from '../src/adapter/claude.js'
 
 let alice: Identity
@@ -229,6 +229,45 @@ describe('inbox 툴 — 저장소를 꺼내 간다', () => {
     expect(res.text).toContain('3')
     expect(res.text).toContain('4')
     expect(res.text).not.toContain('\n0')
+  })
+
+  test('limit 은 발신을 소비하지 않고 수신 기준으로 적용한다', async () => {
+    await save({ text: '오래된 수신', sentAt: 1 })
+    await save({ direction: 'out', text: '최신 발신', senderLabel: undefined, sentAt: 2 })
+    await save({ text: '최신 수신', sentAt: 3 })
+
+    const res = await callTool(ctx(), 'inbox', { limit: 2 })
+    expect(res.text).toContain('오래된 수신')
+    expect(res.text).toContain('최신 수신')
+    expect(res.text).not.toContain('최신 발신')
+  })
+
+  test('미읽음 수신을 우선 선택하고 새 메시지로 표시한다', async () => {
+    const oldRead = await save({ text: '오래된 읽음', sentAt: 1 })
+    await store.markDelivered([oldRead.id])
+    await save({ text: '미읽은 수신', sentAt: 2 })
+    const recentRead = await save({ text: '최근 읽음', sentAt: 3 })
+    await store.markDelivered([recentRead.id])
+
+    const res = await callTool(ctx(), 'inbox', { limit: 2 })
+    expect(res.text).toContain('미읽은 수신')
+    expect(res.text).toContain('최근 읽음')
+    expect(res.text).not.toContain('오래된 읽음')
+    expect(res.text).toContain('새 메시지')
+  })
+
+  test('선택 결과는 미읽음 우선 뒤 시간순으로 결정된다', () => {
+    const selected = selectInboxMessages(
+      [
+        record({ id: '01', sentAt: 1, delivered: true, text: '읽음' }),
+        record({ id: '02', sentAt: 2, delivered: false, text: '미읽음' }),
+        record({ id: '03', sentAt: 3, delivered: true, text: '최근 읽음' }),
+        record({ id: '04', direction: 'out', sentAt: 4, delivered: true, text: '발신' }),
+      ],
+      2,
+    )
+
+    expect(selected.map(m => m.id)).toEqual(['02', '03'])
   })
 
   test('내가 보낸 것은 돌려주지 않는다 — 도착한 메시지가 아니다', async () => {

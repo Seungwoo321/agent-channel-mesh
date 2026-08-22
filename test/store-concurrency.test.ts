@@ -12,11 +12,18 @@
  * 2. **이중 선점이 없다** — 두 프로세스가 동시에 집어도 같은 id 가 겹치지 않는다.
  */
 import { test, expect, describe, beforeEach, afterEach } from 'bun:test'
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { MessageStore, type NewMessage, type StoredMessage } from '../src/store/store.js'
+import {
+  MessageStore,
+  ReceiverLeaseError,
+  receiverLeasePathOf,
+  type NewMessage,
+  type ReceiverLease,
+  type StoredMessage,
+} from '../src/store/store.js'
 import { withLock, lockPathOf } from '../src/store/lock.js'
 
 let dir: string
@@ -265,6 +272,132 @@ describe('전달 리스 — 이중 선점 (§6.6)', () => {
     await writeFile(store.pathOf(A), JSON.stringify(body), { mode: 0o600 })
 
     await expect(store.read(A)).rejects.toThrow(/messages\[0\]\.claimedAt/)
+  })
+})
+
+describe('릴레이 receiver lease — 동일 identity 수신 독점 (§6.6)', () => {
+  test('두 adapter가 동시에 획득하면 정확히 하나만 성공하고 두 번째는 명확히 실패한다', async () => {
+    const first = new MessageStore({ dir })
+    const second = new MessageStore({ dir })
+
+    const outcomes = await Promise.allSettled([
+      first.acquireReceiverLease({ staleMs: 500, heartbeatMs: 25 }),
+      second.acquireReceiverLease({ staleMs: 500, heartbeatMs: 25 }),
+    ])
+    const acquired = outcomes.filter(
+      (result): result is PromiseFulfilledResult<ReceiverLease> => result.status === 'fulfilled',
+    )
+    const rejected = outcomes.filter(result => result.status === 'rejected')
+
+    expect(acquired).toHaveLength(1)
+    expect(rejected).toHaveLength(1)
+    const reason = rejected[0]?.reason
+    expect(reason).toBeInstanceOf(ReceiverLeaseError)
+    expect(reason).toMatchObject({ code: 'RECEIVER_LEASE_HELD' })
+    expect(reason).toMatchObject({
+      holder: {
+        pid: process.pid,
+        acquiredAt: expect.any(Number),
+        heartbeatAt: expect.any(Number),
+      },
+    })
+    const leaseToken = JSON.parse(await readFile(receiverLeasePathOf(dir), 'utf8')).token as string
+    expect(reason.message).not.toContain(leaseToken)
+    expect(first.receiverLeaseActive !== second.receiverLeaseActive).toBe(true)
+
+    await acquired[0]!.value.release()
+    expect(existsSync(receiverLeasePathOf(dir))).toBe(false)
+  })
+
+  test('정상 release 후 다른 adapter가 즉시 다시 획득할 수 있다', async () => {
+    const first = new MessageStore({ dir })
+    const second = new MessageStore({ dir })
+    const lease = await first.acquireReceiverLease({ staleMs: 500, heartbeatMs: 25 })
+
+    expect(first.receiverLeasePath).toBe(receiverLeasePathOf(dir))
+    expect(first.receiverLeaseActive).toBe(true)
+    expect(await lease.release()).toBe(true)
+    expect(first.receiverLeaseActive).toBe(false)
+    expect(await first.releaseReceiverLease()).toBe(false)
+    expect(existsSync(first.receiverLeasePath)).toBe(false)
+
+    const replacement = await second.acquireReceiverLease({ staleMs: 500, heartbeatMs: 25 })
+    expect(second.receiverLeaseActive).toBe(true)
+    expect(await second.releaseReceiverLease()).toBe(true)
+    expect(await replacement.release()).toBe(false)
+  })
+
+  test('heartbeat가 살아 있는 receiver를 stale로 회수하지 못하게 갱신한다', async () => {
+    const store = new MessageStore({ dir })
+    const lease = await store.acquireReceiverLease({ staleMs: 200, heartbeatMs: 20 })
+    const initial = JSON.parse(await readFile(lease.path, 'utf8'))
+
+    await new Promise(resolve => setTimeout(resolve, 60))
+    const current = JSON.parse(await readFile(lease.path, 'utf8'))
+    expect(current.token).toBe(lease.token)
+    expect(current.heartbeatAt).toBeGreaterThan(initial.heartbeatAt)
+    expect(store.receiverLeaseActive).toBe(true)
+
+    await lease.release()
+  })
+
+  test('heartbeat가 끊긴 stale lease는 회수하고 경고를 남긴다', async () => {
+    const store = new MessageStore({ dir })
+    const path = receiverLeasePathOf(dir)
+    const stale = {
+      pid: 999_999,
+      token: 'stale-token',
+      acquiredAt: Date.now() - 10_000,
+      heartbeatAt: Date.now() - 10_000,
+    }
+    await writeFile(path, JSON.stringify(stale), { mode: 0o600 })
+
+    const warnings: string[] = []
+    const lease = await store.acquireReceiverLease({
+      staleMs: 100,
+      heartbeatMs: 20,
+      warn: message => warnings.push(message),
+    })
+
+    expect(lease.token).not.toBe(stale.token)
+    expect(warnings.join('\n')).toMatch(/오래된 receiver lease 를 회수한다/)
+    expect(JSON.parse(await readFile(path, 'utf8')).pid).toBe(process.pid)
+    await lease.release()
+  })
+
+  test('lease 파일 권한이 넓으면 읽거나 회수하지 않고 거부한다', async () => {
+    const store = new MessageStore({ dir })
+    const path = receiverLeasePathOf(dir)
+    await writeFile(
+      path,
+      JSON.stringify({
+        pid: 999_999,
+        token: 'permission-test',
+        acquiredAt: Date.now(),
+        heartbeatAt: Date.now(),
+      }),
+      { mode: 0o600 },
+    )
+    await chmod(path, 0o644)
+
+    await expect(store.acquireReceiverLease()).rejects.toThrow(/receiver lease 파일 권한이 너무 넓다/)
+    expect(existsSync(path)).toBe(true)
+  })
+
+  test('소유 token이 바뀐 뒤의 이전 lease release는 새 소유자를 지우지 않는다', async () => {
+    const store = new MessageStore({ dir })
+    const lease = await store.acquireReceiverLease({ staleMs: 2_000, heartbeatMs: 1_000 })
+    const replacement = {
+      pid: process.pid,
+      token: 'replacement-token',
+      acquiredAt: Date.now(),
+      heartbeatAt: Date.now(),
+    }
+    await writeFile(lease.path, JSON.stringify(replacement), { mode: 0o600 })
+
+    expect(await lease.release()).toBe(false)
+    expect(JSON.parse(await readFile(lease.path, 'utf8')).token).toBe(replacement.token)
+    await rm(lease.path, { force: true })
   })
 })
 

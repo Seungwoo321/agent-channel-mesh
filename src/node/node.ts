@@ -18,7 +18,7 @@ import { receive, type RejectReason } from '../crypto/receive.js'
 import { ReplayGuard } from '../crypto/replay.js'
 import { Channel } from '../channel/channel.js'
 import { SpeechControl, type Decision, type SpeechOptions } from '../channel/speech.js'
-import { RelayClient } from '../relay/client.js'
+import { RelayClient, type RelayHealth } from '../relay/client.js'
 import type { Axis } from '../store/store.js'
 import { toKey } from '../identity/fingerprint.js'
 import { grantOf, OPEN_POLICY, type Authority, type Grant, type Policy } from '../policy/authority.js'
@@ -305,6 +305,16 @@ export class MeshNode {
   /** 폴링을 멈춘다. */
   stop(): void {
     this.relay?.stop()
+  }
+
+  /** 이 노드가 실제 릴레이 수신 루프를 소유하는지. */
+  get hasRelay(): boolean {
+    return this.relay !== undefined
+  }
+
+  /** 릴레이가 있으면 마지막 폴링 상태를, 없으면 `undefined`를 돌려준다. */
+  get relayHealth(): RelayHealth | undefined {
+    return this.relay?.health
   }
 }
 

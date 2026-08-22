@@ -30,7 +30,8 @@ import { chmod, readFile, rename, writeFile } from 'node:fs/promises'
 import { parseKey } from '../identity/fingerprint.js'
 import { GRANTS } from '../policy/authority.js'
 import { readTaint } from '../policy/taint.js'
-import { expandHome, fromHex, validate } from './config.js'
+import { withLock } from '../store/lock.js'
+import { expandHome, fromHex, identityOf, validate } from './config.js'
 import type { ToolResult, ToolSpec } from './tools.js'
 
 /** 설정 파일 권한. 로더가 요구하는 값과 같아야 한다 (§11). */
@@ -42,6 +43,14 @@ const RESTART = '세션을 다시 열어야 적용된다 — 노드는 시작할
 export interface ConfigureContext {
   /** 고칠 설정 파일. 어댑터가 실제로 읽는 그 경로여야 한다. */
   readonly configPath: string
+  /**
+   * 노드가 시작할 때 읽은 설정의 런타임 신원 지문.
+   *
+   * 서버는 항상 넣는다. 설정 서버·기존 테스트처럼 신원이 아직 없는 호출자는
+   * 생략할 수 있지만, 값이 있으면 mutation 전에 파일의 현재 seed와 반드시
+   * 대조한다 — 파일 교체로 다른 신원의 권한을 쓰지 않게 한다.
+   */
+  readonly runtimeFingerprint?: string
   /**
    * 오염 상태를 둔 디렉토리 (§8.3). 저장소 디렉토리와 같다.
    *
@@ -263,27 +272,67 @@ async function tainted(ctx: ConfigureContext): Promise<ToolResult | undefined> {
  * 쓰기는 temp+rename 이고 권한은 만들 때부터 600 이다 — `writeFile` 의 mode 는
  * 이미 있는 파일에는 적용되지 않으므로 새 파일에 쓴 뒤 옮긴다. umask 가 넓어도
  * `chmod` 로 한 번 더 좁힌다.
+ *
+ * 잠금 파일은 설정 파일 옆에 둔다. 잠금 안에서 읽기부터 rename 까지 수행해야
+ * 두 writer가 같은 옛 snapshot을 읽고 나중 writer가 앞선 변경을 덮는 lost
+ * update를 막을 수 있다. 런타임 지문이 주어졌다면 이 잠금 안에서 현재 파일의
+ * seed도 확인한다 — 경로가 다른 신원의 파일로 교체된 경우에는 쓰지 않는다.
  */
 async function mutate(
   ctx: ConfigureContext,
   change: (raw: Record<string, unknown>) => string,
 ): Promise<ToolResult> {
   const path = expandHome(ctx.configPath)
-  const raw: unknown = JSON.parse(await readFile(path, 'utf8'))
-  if (typeof raw !== 'object' || raw === null) throw new Error('설정이 객체가 아니다')
+  return await withLock(path, async () => {
+    const raw: unknown = JSON.parse(await readFile(path, 'utf8'))
+    if (typeof raw !== 'object' || raw === null) throw new Error('설정이 객체가 아니다')
 
-  // 모르는 필드를 지우지 않는다 — 이 파일은 사람도 고치는 파일이라,
-  // 우리가 아는 모양으로 다시 쓰면 사용자가 적어 둔 값이 조용히 사라진다.
-  const next = { ...(raw as Record<string, unknown>) }
-  const summary = change(next)
-  validate(next)
+    await assertRuntimeIdentity(ctx, raw as Record<string, unknown>)
 
-  const tmp = `${path}.${String(process.pid)}.tmp`
-  await writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: FILE_MODE })
-  await chmod(tmp, FILE_MODE)
-  await rename(tmp, path)
+    // 모르는 필드를 지우지 않는다 — 이 파일은 사람도 고치는 파일이라,
+    // 우리가 아는 모양으로 다시 쓰면 사용자가 적어 둔 값이 조용히 사라진다.
+    const next = { ...(raw as Record<string, unknown>) }
+    const summary = change(next)
+    validate(next)
 
-  return { text: `${summary}\n${RESTART}` }
+    const tmp = `${path}.${String(process.pid)}.tmp`
+    await writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, { mode: FILE_MODE })
+    await chmod(tmp, FILE_MODE)
+    await rename(tmp, path)
+
+    return { text: `${summary}\n${RESTART}` }
+  })
+}
+
+/**
+ * 런타임이 읽은 신원과 mutation 대상 파일의 현재 신원을 대조한다.
+ *
+ * 이 검사는 경로가 바뀌었거나 파일이 다른 seed로 교체된 경우를 구분한다.
+ * 비교와 RMW가 같은 `withLock` 임계 구역 안에 있으므로, 이 모듈을 통한 동시
+ * writer는 검사 뒤 다른 snapshot을 덮어쓸 수 없다.
+ */
+async function assertRuntimeIdentity(
+  ctx: ConfigureContext,
+  raw: Record<string, unknown>,
+): Promise<void> {
+  if (ctx.runtimeFingerprint === undefined) return
+
+  const fileFingerprint = toFingerprint(await identityOf(validate(raw)))
+  const runtimeFingerprint = canonicalFingerprint(ctx.runtimeFingerprint)
+  if (runtimeFingerprint === fileFingerprint) return
+
+  throw new Error(
+    '런타임 신원과 설정 파일의 신원이 다르다 — 파일이 교체됐을 수 있어 쓰기를 거부한다: ' +
+      `runtime fingerprint=${runtimeFingerprint}, file fingerprint=${fileFingerprint}`,
+  )
+}
+
+function toFingerprint(identity: Awaited<ReturnType<typeof identityOf>>): string {
+  return Array.from(identity.fingerprint, byte => byte.toString(16).padStart(2, '0')).join('')
+}
+
+function canonicalFingerprint(value: string): string {
+  return value.replace(/\s+/g, '').toLowerCase()
 }
 
 async function channelJoin(

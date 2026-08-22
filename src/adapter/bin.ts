@@ -26,7 +26,7 @@ import { serve, type Delivery } from './server.js'
 import { serveSetup } from './setup.js'
 import { MessageStore } from '../store/store.js'
 import { init, whoami, newChannelSecret } from './onboard.js'
-import { format } from '../identity/fingerprint.js'
+import { format, toKey } from '../identity/fingerprint.js'
 import { hookMain } from '../install/notify.js'
 
 /** 무엇을 하러 왔는가. `serve` 만 전달 방식을 요구한다. */
@@ -192,7 +192,10 @@ export async function main(argv: readonly string[]): Promise<{ stop: () => Promi
 
   if (args.command === 'whoami') {
     const { identity } = await buildNode(await loadConfig(args.config))
-    process.stdout.write(whoami(identity, args.label) + '\n')
+    process.stdout.write(
+      `${whoami(identity, args.label)}\n\n` +
+        `이 세션이 사용하는 설정 경로: ${expandHome(args.config)}\n`,
+    )
     return undefined
   }
 
@@ -232,6 +235,7 @@ export async function main(argv: readonly string[]): Promise<{ stop: () => Promi
     // 경로여야 한다 — `--config` 로 다른 파일을 가리킨 세션이 기본 경로를
     // 고치면, 고쳤다는 보고와 실제로 도는 설정이 어긋난다.
     configPath: args.config,
+    runtimeFingerprint: toKey(identity.fingerprint),
     // 저장소를 **여기서** 세운다. `serve` 가 생략을 기본값으로 메워 주므로
     // 안 넘겨도 서버는 뜨지만, 그러면 설정 파일의 `store.*` 는 검증만 되고
     // 아무 효과가 없다 — 사용자는 보관 기한을 줄였다고 믿는데 30일 기본값이

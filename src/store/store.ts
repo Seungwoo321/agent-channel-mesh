@@ -30,7 +30,7 @@
  *   것을 집으면 **같은 말이 두 번 간다**. 읽기와 표시를 한 번의 잠금 안에서 함께
  *   한다 — §6.6 의 "중복은 상태로 막는다"가 프로세스 사이에서도 성립해야 한다.
  */
-import { chmod, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { withLock } from './lock.js'
 import { isGrant, type Authority, type Grant } from '../policy/authority.js'
@@ -79,6 +79,15 @@ const MAX_FILE_MODE = 0o600
 
 /** 저장 디렉토리의 최대 허용 권한. 목록만 읽혀도 채널 id 가 새므로 함께 막는다. */
 const MAX_DIR_MODE = 0o700
+
+/** 릴레이 수신 lease 가 heartbeat 없이 살아 있을 수 있는 최대 시간(ms). */
+export const DEFAULT_RECEIVER_LEASE_STALE_MS = 30_000
+
+/** 릴레이 수신 lease heartbeat 주기(ms). stale 기준보다 충분히 짧아야 한다. */
+export const DEFAULT_RECEIVER_LEASE_HEARTBEAT_MS = 5_000
+
+/** 채널 파일 목록에 잡히지 않는 저장소 전체 수신 lease 파일 이름. */
+const RECEIVER_LEASE_FILE = '.receiver.lease'
 
 /**
  * 파일 형식 버전. 형식을 바꿀 때 조용히 오해석하지 않으려고 둔다.
@@ -205,6 +214,80 @@ export interface StoreOptions {
   readonly lockStaleMs?: number
 }
 
+/** 수신 lease 파일에 남기는 소유자 정보. */
+export interface ReceiverLeaseHolder {
+  readonly pid: number
+  readonly token: string
+  readonly acquiredAt: number
+  readonly heartbeatAt: number
+}
+
+/** lease 충돌을 외부에 보고할 때 공개할 소유자 메타데이터. capability token은 제외한다. */
+export interface ReceiverLeaseConflictHolder {
+  readonly pid: number
+  readonly acquiredAt: number
+  readonly heartbeatAt: number
+}
+
+/** 릴레이 수신 lease 획득 정책. 훅은 이 API를 호출하지 않고 로컬 store 만 읽는다. */
+export interface ReceiverLeaseOptions {
+  /** 이 시간 동안 heartbeat 가 없으면 죽은 receiver 로 보고 회수한다. */
+  readonly staleMs?: number
+  /** lease 파일 heartbeat 주기. staleMs 보다 짧아야 한다. */
+  readonly heartbeatMs?: number
+  /** stale lease 회수나 heartbeat 상실을 알린다. 기본값은 stderr 이다. */
+  readonly warn?: (message: string) => void
+  /** heartbeat 가 갱신되지 않아 lease 를 잃었을 때 호출한다. */
+  readonly onLost?: (error: Error) => void
+}
+
+/** 같은 identity 저장소의 다른 adapter 가 receiver lease 를 이미 가진 경우다. */
+export class ReceiverLeaseError extends Error {
+  readonly code = 'RECEIVER_LEASE_HELD'
+  readonly path: string
+  readonly holder: ReceiverLeaseConflictHolder | undefined
+
+  constructor(path: string, holder: ReceiverLeaseHolder | undefined) {
+    const detail =
+      holder === undefined
+        ? '소유자 정보를 읽을 수 없다'
+        : `pid=${holder.pid}, acquired=${holder.acquiredAt}, heartbeat=${holder.heartbeatAt}`
+    super(
+      `릴레이 수신 lease 를 잡을 수 없다: ${path}. ` +
+        `같은 identity 저장소를 사용하는 다른 adapter 가 이미 수신 중이다 (${detail}).`,
+    )
+    this.name = 'ReceiverLeaseError'
+    this.path = path
+    this.holder =
+      holder === undefined
+        ? undefined
+        : {
+            pid: holder.pid,
+            acquiredAt: holder.acquiredAt,
+            heartbeatAt: holder.heartbeatAt,
+          }
+  }
+}
+
+/** MessageStore 가 잡은 수신 lease. release 는 소유 token 을 확인하고 멱등적으로 동작한다. */
+export interface ReceiverLease {
+  readonly path: string
+  readonly pid: number
+  readonly token: string
+  /** 실제로 내 lease 파일을 지웠으면 true, 이미 놓였거나 회수됐으면 false. */
+  release(): Promise<boolean>
+}
+
+interface ActiveReceiverLease {
+  readonly holder: ReceiverLeaseHolder
+  readonly warn: (message: string) => void
+  readonly onLost: ((error: Error) => void) | undefined
+  lease: ReceiverLease
+  timer?: ReturnType<typeof setInterval>
+  released: boolean
+  lost: boolean
+}
+
 /** 파일에 실제로 들어가는 형태. */
 interface ChannelFile {
   readonly version: number
@@ -227,6 +310,8 @@ export class MessageStore {
   private readonly now: () => number
   private readonly lockTimeoutMs: number | undefined
   private readonly lockStaleMs: number | undefined
+  private receiverLease: ActiveReceiverLease | undefined
+  private receiverLeaseAcquire: Promise<ReceiverLease> | undefined
 
   constructor(options: StoreOptions = {}) {
     this.dir = expandHome(options.dir ?? DEFAULT_STORE_DIR)
@@ -269,6 +354,173 @@ export class MessageStore {
    */
   get directory(): string {
     return this.dir
+  }
+
+  /** 이 저장소의 릴레이 receiver lease 파일이 있는 자리. */
+  get receiverLeasePath(): string {
+    return receiverLeasePathOf(this.dir)
+  }
+
+  /** 이 인스턴스가 아직 릴레이 수신권을 보유하고 있는지. */
+  get receiverLeaseActive(): boolean {
+    const active = this.receiverLease
+    return active !== undefined && !active.released && !active.lost
+  }
+
+  /**
+   * 저장소 전체의 릴레이 drain 권한을 독점한다.
+   *
+   * 채널별 `.json.lock` 은 read-modify-write 를 직렬화할 뿐, 두 adapter 중 누가
+   * 릴레이를 읽을지는 정하지 않는다. 이 lease 는 그보다 한 단계 바깥의
+   * 저장소 전체 경계다. 훅은 이 메서드를 호출하지 않으므로, 이미 저장된
+   * 메시지를 읽는 fallback 경로와 receiver 독점권이 서로 막지 않는다.
+   *
+   * 반환된 lease 를 서버의 `try/finally` 에서 release 해야 한다. heartbeat 가
+   * 끊기면 lease 를 잃은 것으로 표시하고 `onLost` 를 호출하므로, 서버는 poll
+   * 루프도 중단해야 한다.
+   */
+  async acquireReceiverLease(options: ReceiverLeaseOptions = {}): Promise<ReceiverLease> {
+    const current = this.receiverLease
+    if (current !== undefined) {
+      if (!current.released && !current.lost && current.lease !== undefined) return current.lease
+      this.receiverLease = undefined
+    }
+    if (this.receiverLeaseAcquire !== undefined) return this.receiverLeaseAcquire
+
+    const pending = this.acquireReceiverLeaseOnce(options)
+    this.receiverLeaseAcquire = pending
+    try {
+      return await pending
+    } finally {
+      if (this.receiverLeaseAcquire === pending) this.receiverLeaseAcquire = undefined
+    }
+  }
+
+  /** 이 MessageStore 인스턴스가 가진 receiver lease 를 token 검증 후 정상 해제한다. */
+  async releaseReceiverLease(): Promise<boolean> {
+    const active = this.receiverLease
+    if (active === undefined) return false
+    return this.releaseReceiverLeaseFor(active)
+  }
+
+  private async acquireReceiverLeaseOnce(options: ReceiverLeaseOptions): Promise<ReceiverLease> {
+    const staleMs = requireReceiverLeaseDuration(
+      options.staleMs ?? DEFAULT_RECEIVER_LEASE_STALE_MS,
+      'receiver lease staleMs',
+    )
+    const heartbeatMs = requireReceiverLeaseDuration(
+      options.heartbeatMs ?? DEFAULT_RECEIVER_LEASE_HEARTBEAT_MS,
+      'receiver lease heartbeatMs',
+    )
+    if (heartbeatMs >= staleMs) {
+      throw new Error('receiver lease heartbeatMs 는 staleMs 보다 짧아야 한다')
+    }
+
+    const path = this.receiverLeasePath
+    const warn = options.warn ?? ((message: string) => process.stderr.write(`${message}\n`))
+    await this.ensureDir()
+
+    const holder = await withLock(
+      path,
+      async () => {
+        const existing = await readReceiverLease(path)
+        const age = await receiverLeaseAge(path, existing, this.now)
+        if (age !== undefined) {
+          if (age < staleMs) throw new ReceiverLeaseError(path, existing)
+          warn(
+            `[agent-channel-mesh] 오래된 receiver lease 를 회수한다: ${path} ` +
+              `(${Math.round(age)}ms 경과, 기준 ${staleMs}ms). ` +
+              `수신 중이던 프로세스가 죽은 것으로 본다.`,
+          )
+          await unlinkExisting(path)
+        }
+
+        const next: ReceiverLeaseHolder = {
+          pid: process.pid,
+          token: randomHex(16),
+          acquiredAt: this.now(),
+          heartbeatAt: this.now(),
+        }
+        await createReceiverLease(path, next)
+        return next
+      },
+      { ...this.lockOptions(), ensureDir: () => this.ensureDir() },
+    )
+
+    const active: ActiveReceiverLease = {
+      holder,
+      warn,
+      onLost: options.onLost,
+      released: false,
+      lost: false,
+      lease: undefined as unknown as ReceiverLease,
+    }
+    const lease: ReceiverLease = {
+      path,
+      pid: holder.pid,
+      token: holder.token,
+      release: () => this.releaseReceiverLeaseFor(active),
+    }
+    // `lease` 는 active 의 release closure 가 참조하므로, 생성 후 연결한다.
+    active.lease = lease
+    this.receiverLease = active
+    active.timer = setInterval(() => {
+      void this.heartbeatReceiverLease(active)
+    }, heartbeatMs)
+    unrefTimer(active.timer)
+    return lease
+  }
+
+  private async heartbeatReceiverLease(active: ActiveReceiverLease): Promise<void> {
+    if (active.released || active.lost || this.receiverLease !== active) return
+
+    let lost: Error | undefined
+    try {
+      await withLock(active.lease!.path, async () => {
+        if (active.released || active.lost || this.receiverLease !== active) return
+        const current = await readReceiverLease(active.lease!.path)
+        if (current === undefined || current.token !== active.holder.token) {
+          lost = receiverLeaseLostError(active.lease!.path)
+          return
+        }
+        await writeReceiverLease(active.lease!.path, { ...current, heartbeatAt: this.now() })
+      }, this.lockOptions())
+    } catch (error) {
+      lost = error instanceof Error ? error : new Error(String(error))
+    }
+    if (lost !== undefined) this.markReceiverLeaseLost(active, lost)
+  }
+
+  private async releaseReceiverLeaseFor(active: ActiveReceiverLease): Promise<boolean> {
+    if (active.released) return false
+    active.released = true
+    if (active.timer !== undefined) clearInterval(active.timer)
+    if (this.receiverLease === active) this.receiverLease = undefined
+
+    return withLock(
+      active.lease!.path,
+      async () => {
+        const current = await readReceiverLease(active.lease!.path)
+        if (current === undefined || current.token !== active.holder.token) return false
+        return unlinkExisting(active.lease!.path)
+      },
+      this.lockOptions(),
+    )
+  }
+
+  private markReceiverLeaseLost(active: ActiveReceiverLease, error: Error): void {
+    if (active.released || active.lost) return
+    active.lost = true
+    if (active.timer !== undefined) clearInterval(active.timer)
+    if (this.receiverLease === active) this.receiverLease = undefined
+    active.warn(`[agent-channel-mesh] receiver lease 를 잃었다: ${error.message}`)
+    try {
+      active.onLost?.(error)
+    } catch (callbackError) {
+      active.warn(
+        `[agent-channel-mesh] receiver lease onLost 콜백이 실패했다: ${String(callbackError)}`,
+      )
+    }
   }
 
   /**
@@ -866,6 +1118,112 @@ function randomHex(bytes: number): string {
   let s = ''
   for (const x of b) s += x.toString(16).padStart(2, '0')
   return s
+}
+
+/** 저장소 전체 receiver lease 파일의 경로. 채널 파일 규칙과 분리된 이름을 쓴다. */
+export function receiverLeasePathOf(directory: string): string {
+  return join(expandHome(directory), RECEIVER_LEASE_FILE)
+}
+
+function requireReceiverLeaseDuration(value: number, what: string): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${what} 은 유한한 양수여야 한다: ${String(value)}`)
+  }
+  return value
+}
+
+/** 수신 lease 파일을 만들 때만 O_EXCL 로 경합을 판정한다. */
+async function createReceiverLease(path: string, holder: ReceiverLeaseHolder): Promise<void> {
+  const file = await open(path, 'wx', MAX_FILE_MODE)
+  try {
+    try {
+      await file.writeFile(JSON.stringify(holder))
+      await file.chmod(MAX_FILE_MODE)
+    } catch (error) {
+      await unlinkExisting(path)
+      throw error
+    }
+  } finally {
+    await file.close()
+  }
+}
+
+/** heartbeat 갱신은 임시 파일과 rename 으로 반쪽 JSON 을 만들지 않는다. */
+async function writeReceiverLease(path: string, holder: ReceiverLeaseHolder): Promise<void> {
+  const tmp = `${path}.${randomHex(8)}.tmp`
+  try {
+    await writeFile(tmp, JSON.stringify(holder), { mode: MAX_FILE_MODE })
+    await chmod(tmp, MAX_FILE_MODE)
+    await rename(tmp, path)
+  } finally {
+    await unlinkExisting(tmp)
+  }
+}
+
+/** lease 파일을 검증해서 읽는다. 손상 파일은 stale 판정을 위해 undefined 로 돌린다. */
+async function readReceiverLease(path: string): Promise<ReceiverLeaseHolder | undefined> {
+  let raw: string
+  try {
+    await assertMode(path, MAX_FILE_MODE, 'receiver lease 파일', 'chmod 600')
+    raw = await readFile(path, 'utf8')
+  } catch (error) {
+    if (isMissing(error)) return undefined
+    throw error
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const value = parsed as Record<string, unknown>
+  if (
+    typeof value.pid !== 'number' ||
+    !Number.isInteger(value.pid) ||
+    value.pid < 0 ||
+    typeof value.token !== 'string' ||
+    value.token.length === 0 ||
+    typeof value.acquiredAt !== 'number' ||
+    !Number.isFinite(value.acquiredAt) ||
+    typeof value.heartbeatAt !== 'number' ||
+    !Number.isFinite(value.heartbeatAt)
+  ) {
+    return undefined
+  }
+  return {
+    pid: value.pid,
+    token: value.token,
+    acquiredAt: value.acquiredAt,
+    heartbeatAt: value.heartbeatAt,
+  }
+}
+
+/** 정상 lease 또는 손상 lease 의 마지막 갱신 시각으로 stale 여부를 계산한다. */
+async function receiverLeaseAge(
+  path: string,
+  holder: ReceiverLeaseHolder | undefined,
+  now: () => number,
+): Promise<number | undefined> {
+  if (holder !== undefined) return Math.max(0, now() - holder.heartbeatAt)
+  try {
+    return Math.max(0, now() - (await stat(path)).mtimeMs)
+  } catch (error) {
+    if (isMissing(error)) return undefined
+    throw error
+  }
+}
+
+function receiverLeaseLostError(path: string): Error {
+  const error = new Error(`receiver lease 파일의 소유권이 바뀌었다: ${path}`)
+  error.name = 'ReceiverLeaseLostError'
+  return error
+}
+
+function unrefTimer(timer: ReturnType<typeof setInterval>): void {
+  const maybeUnref = (timer as unknown as { unref?: () => void }).unref
+  maybeUnref?.call(timer)
 }
 
 function isMissing(e: unknown): boolean {

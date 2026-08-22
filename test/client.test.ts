@@ -11,7 +11,13 @@ import { Channel } from '../src/channel/channel.js'
 import { MeshNode } from '../src/node/node.js'
 import { MemoryStore } from '../src/relay/store.js'
 import { createHandler } from '../src/relay/http.js'
-import { DEFAULT_POLL_MAX_MS, RelayClient, RelayError, nextPollDelay } from '../src/relay/client.js'
+import {
+  DEFAULT_POLL_MAX_MS,
+  RelayClient,
+  RelayError,
+  nextPollDelay,
+  type RelayHealthSnapshot,
+} from '../src/relay/client.js'
 import { MAX_ENVELOPE_BYTES } from '../src/relay/relay.js'
 import {
   HEADER_KEM,
@@ -236,6 +242,66 @@ describe('폴링', () => {
     expect(race).toBe('여전히 살아 있음')
     expect(calls).toBeGreaterThan(0)
   })
+
+  test('오류를 health에 기록하고 onError 관찰자 예외를 격리한다', async () => {
+    let calls = 0
+    const errors: unknown[] = []
+    const waits: number[] = []
+    let c!: RelayClient
+    let afterFailure!: RelayHealthSnapshot
+    const fetch = (async () => {
+      calls++
+      if (calls === 1) {
+        return new Response(
+          JSON.stringify({ ok: false, detail: '인증 실패', reason: 'auth' }),
+          { status: 401, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      return new Response(JSON.stringify({ ok: true, messages: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }) as unknown as typeof globalThis.fetch
+
+    c = new RelayClient({
+      baseUrl: 'http://릴레이',
+      identity: bob,
+      pollMs: 1,
+      pollMaxMs: 4,
+      fetch,
+      onError: error => {
+        errors.push(error)
+        throw new Error('관찰자 자체 오류')
+      },
+      sleep: async ms => {
+        waits.push(ms)
+        if (waits.length === 1) afterFailure = c.health
+        else c.stop()
+      },
+    })
+
+    await c.poll().next()
+
+    expect(errors).toHaveLength(1)
+    expect(errors[0]).toBeInstanceOf(RelayError)
+    expect(afterFailure).toMatchObject({
+      consecutiveFailures: 1,
+      lastErrorMessage: '수신함 조회 실패: 인증 실패',
+      lastErrorStatus: 401,
+      lastErrorReason: 'auth',
+      lastError: {
+        message: '수신함 조회 실패: 인증 실패',
+        status: 401,
+        reason: 'auth',
+      },
+    })
+    expect(afterFailure.lastErrorAt).toBeDefined()
+    expect(afterFailure.lastSuccessAt).toBeUndefined()
+    expect(c.health.consecutiveFailures).toBe(0)
+    expect(c.health.lastSuccessAt).toBeDefined()
+    expect(c.health.lastErrorAt).toBe(afterFailure.lastErrorAt)
+    expect(waits).toEqual([2, 2])
+  })
 })
 
 describe('수신함 조회 인증 (§10.12)', () => {
@@ -311,5 +377,19 @@ describe('노드 통합', () => {
   test('릴레이 없는 노드는 listen 하지 못한다', async () => {
     const node = new MeshNode({ identity: alice })
     await expect(node.listen().next()).rejects.toThrow(/릴레이가 없다/)
+    expect(node.relayHealth).toBeUndefined()
+  })
+
+  test('노드는 릴레이 health 스냅샷을 읽을 수 있다', async () => {
+    const { fetch } = wired()
+    const relay = new RelayClient({ baseUrl: 'http://relay', identity: bob, fetch })
+    const node = new MeshNode({ identity: bob, relay })
+
+    await relay.fetchInbox()
+
+    expect(node.relayHealth).toMatchObject({
+      consecutiveFailures: 0,
+    })
+    expect(node.relayHealth?.lastSuccessAt).toBeDefined()
   })
 })

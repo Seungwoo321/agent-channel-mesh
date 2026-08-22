@@ -18,7 +18,10 @@ import {
   runConfigure,
   type ConfigureContext,
 } from '../src/adapter/configure.js'
+import { identityOf, validate } from '../src/adapter/config.js'
+import { toKey } from '../src/identity/fingerprint.js'
 import { addTaint, taintPathOf, type TaintSource } from '../src/policy/taint.js'
+import { lockPathOf, withLock } from '../src/store/lock.js'
 
 const SEED = '11'.repeat(32)
 const SECRET = 'aa'.repeat(32)
@@ -29,6 +32,7 @@ const BOB_SIGN = '03'.repeat(32)
 const BOB_KEM = '04'.repeat(32)
 const FP = 'ab'.repeat(16)
 const FP2 = 'cd'.repeat(16)
+const OTHER_SEED = '22'.repeat(32)
 
 let dir: string
 let configPath: string
@@ -69,6 +73,22 @@ function members(raw: Record<string, unknown>, name: string): Record<string, unk
 
 function ctx(extra?: Partial<ConfigureContext>): ConfigureContext {
   return { configPath, ...extra }
+}
+
+async function fingerprintOf(seed = SEED): Promise<string> {
+  return toKey((await identityOf(validate({ ...base(), seed }))).fingerprint)
+}
+
+async function waitForLock(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      await stat(path)
+      return
+    } catch {
+      await new Promise(resolve => setTimeout(resolve, 5))
+    }
+  }
+  throw new Error(`잠금 파일이 생기지 않았다: ${path}`)
 }
 
 beforeEach(async () => {
@@ -338,6 +358,61 @@ describe('파일 권한', () => {
       process.umask(before)
     }
     expect((await stat(configPath)).mode & 0o777).toBe(0o600)
+  })
+})
+
+describe('런타임 신원 경계와 RMW 잠금', () => {
+  test('runtime fingerprint와 파일 seed가 일치하면 쓴다', async () => {
+    const runtimeFingerprint = await fingerprintOf()
+    const r = await runConfigure(ctx({ runtimeFingerprint }), 'channel_leave', { name: 'team' })
+
+    expect(r.isError).toBeUndefined()
+    expect(channels(await readConfig())).toHaveLength(0)
+  })
+
+  test('파일이 다른 seed로 교체되면 runtime/file fingerprint를 함께 보고 거부한다', async () => {
+    const runtimeFingerprint = await fingerprintOf(OTHER_SEED)
+    const fileFingerprint = await fingerprintOf()
+    const before = await readFile(configPath, 'utf8')
+
+    const r = await runConfigure(ctx({ runtimeFingerprint }), 'channel_leave', { name: 'team' })
+
+    expect(r.isError).toBe(true)
+    expect(r.text).toContain(`runtime fingerprint=${runtimeFingerprint}`)
+    expect(r.text).toContain(`file fingerprint=${fileFingerprint}`)
+    expect(await readFile(configPath, 'utf8')).toBe(before)
+  })
+
+  test('read-modify-write 전체가 설정 파일 잠금 경로에서 직렬화된다', async () => {
+    let release!: () => void
+    const held = new Promise<void>(resolve => {
+      release = resolve
+    })
+    const lockPath = lockPathOf(configPath)
+    const holder = withLock(configPath, async () => held)
+    await waitForLock(lockPath)
+
+    let finished = false
+    const mutation = runConfigure(ctx(), 'channel_leave', { name: 'team' }).then(result => {
+      finished = true
+      return result
+    })
+
+    await new Promise(resolve => setTimeout(resolve, 25))
+    expect(finished).toBe(false)
+
+    release()
+    await holder
+    const result = await mutation
+    expect(result.isError).toBeUndefined()
+
+    let lockRemains = true
+    try {
+      await stat(lockPath)
+    } catch {
+      lockRemains = false
+    }
+    expect(lockRemains).toBe(false)
   })
 })
 

@@ -65,7 +65,29 @@ export interface ClientOptions {
   readonly sleep?: (ms: number) => Promise<void>
   /** 테스트·서버리스에서 주입한다. 기본은 전역 `fetch`. */
   readonly fetch?: typeof globalThis.fetch
+  /** 폴링 실패를 관찰한다. 관찰자 자체의 예외는 폴링을 중단시키지 않는다. */
+  readonly onError?: (error: unknown) => void | PromiseLike<void>
 }
+
+/** 릴레이 수신 폴링의 마지막 관측 상태. 읽기 전용 스냅샷으로 돌려준다. */
+export interface RelayHealthError {
+  readonly message: string
+  readonly status?: number
+  readonly reason?: string
+}
+
+export interface RelayHealth {
+  readonly lastSuccessAt?: number
+  readonly lastErrorAt?: number
+  readonly lastError?: RelayHealthError
+  readonly lastErrorMessage?: string
+  readonly lastErrorStatus?: number
+  readonly lastErrorReason?: string
+  readonly consecutiveFailures: number
+}
+
+/** 의미를 드러내는 호환 별칭. 스냅샷은 매 getter 호출마다 새 객체다. */
+export type RelayHealthSnapshot = RelayHealth
 
 export class RelayError extends Error {
   constructor(
@@ -92,6 +114,8 @@ export class RelayClient {
   private readonly pollMaxMs: number
   private readonly http: typeof globalThis.fetch
   private readonly wait: (ms: number) => Promise<void>
+  private readonly onError?: (error: unknown) => void | PromiseLike<void>
+  private healthState: RelayHealth = { consecutiveFailures: 0 }
   private stopped = false
 
   constructor(options: ClientOptions) {
@@ -106,6 +130,7 @@ export class RelayClient {
     this.pollMaxMs = Math.max(this.pollMs, positive(options.pollMaxMs, DEFAULT_POLL_MAX_MS))
     this.wait = options.sleep ?? sleep
     this.http = options.fetch ?? globalThis.fetch.bind(globalThis)
+    this.onError = options.onError
   }
 
   /** 봉투를 릴레이에 올린다. 실패는 던진다 — 조용한 유실이 최악이다. */
@@ -130,24 +155,31 @@ export class RelayClient {
    * 같은 `fetchSigningBytes` 로 만든다 — 양쪽이 각자 조립하면 언젠가 갈린다.
    */
   async fetchInbox(): Promise<Uint8Array[]> {
-    const nonce = newFetchNonce()
-    const timeMs = Date.now()
-    const message = fetchSigningBytes(this.identity.keyId, timeMs, nonce)
-    const headers = fetchAuthHeaders({
-      kemPublicKey: this.identity.kemPublicKey,
-      signPublicKey: this.identity.signPublicKey,
-      signature: sign(this.identity, message),
-      timeMs,
-      nonce,
-    })
+    try {
+      const nonce = newFetchNonce()
+      const timeMs = Date.now()
+      const message = fetchSigningBytes(this.identity.keyId, timeMs, nonce)
+      const headers = fetchAuthHeaders({
+        kemPublicKey: this.identity.kemPublicKey,
+        signPublicKey: this.identity.signPublicKey,
+        signature: sign(this.identity, message),
+        timeMs,
+        nonce,
+      })
 
-    const res = await this.http(`${this.base}/fetch/${this.keyIdHex}`, { headers })
-    const body = (await res.json()) as FetchBody | ErrorBody
-    if (!res.ok || !body.ok) {
-      const err = body as ErrorBody
-      throw new RelayError(`수신함 조회 실패: ${err.detail ?? res.statusText}`, res.status, err.reason)
+      const res = await this.http(`${this.base}/fetch/${this.keyIdHex}`, { headers })
+      const body = (await res.json()) as FetchBody | ErrorBody
+      if (!res.ok || !body.ok) {
+        const err = body as ErrorBody
+        throw new RelayError(`수신함 조회 실패: ${err.detail ?? res.statusText}`, res.status, err.reason)
+      }
+      const messages = body.messages.map(m => fromBase64(m.envelope))
+      this.recordSuccess()
+      return messages
+    } catch (error) {
+      this.recordFailure(error)
+      throw error
     }
-    return body.messages.map(m => fromBase64(m.envelope))
   }
 
   /**
@@ -168,7 +200,8 @@ export class RelayClient {
         batch = await this.fetchInbox()
         // 메시지가 실제로 왔으면 다음 빈 조회는 다시 빠르게 시작한다.
         if (batch.length > 0) delay = this.pollMs
-      } catch {
+      } catch (error) {
+        this.notifyError(error)
         // 오류도 빈 응답과 같은 비용 상한 안에 둔다. 계속 401/5xx를 두드리는
         // 것은 장애를 복구하지 못하면서 릴레이 비용만 늘리는 재시도 폭주다.
         delay = nextPollDelay(delay, this.pollMaxMs)
@@ -196,6 +229,47 @@ export class RelayClient {
   get running(): boolean {
     return !this.stopped
   }
+
+  /** 마지막 수신 폴링 상태. 호출마다 새 객체를 반환해 내부 상태를 보호한다. */
+  get health(): RelayHealth {
+    return {
+      ...this.healthState,
+      ...(this.healthState.lastError !== undefined
+        ? { lastError: { ...this.healthState.lastError } }
+        : {}),
+    }
+  }
+
+  private recordSuccess(): void {
+    this.healthState = {
+      ...this.healthState,
+      lastSuccessAt: Date.now(),
+      consecutiveFailures: 0,
+    }
+  }
+
+  private recordFailure(error: unknown): void {
+    const details = relayErrorDetails(error)
+    this.healthState = {
+      ...this.healthState,
+      lastErrorAt: Date.now(),
+      lastError: details,
+      lastErrorMessage: details.message,
+      ...(details.status !== undefined ? { lastErrorStatus: details.status } : { lastErrorStatus: undefined }),
+      ...(details.reason !== undefined ? { lastErrorReason: details.reason } : { lastErrorReason: undefined }),
+      consecutiveFailures: this.healthState.consecutiveFailures + 1,
+    }
+  }
+
+  /** 관찰자의 동기·비동기 예외를 모두 격리한다. */
+  private notifyError(error: unknown): void {
+    if (!this.onError) return
+    try {
+      void Promise.resolve(this.onError(error)).catch(() => undefined)
+    } catch {
+      // 상태 관찰은 전달 경로보다 낮은 우선순위다. 관찰자 결함으로 폴링을 죽이지 않는다.
+    }
+  }
 }
 
 const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
@@ -203,6 +277,18 @@ const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms))
 /** 유효하지 않은 선택값은 안전한 기본값으로 되돌린다. */
 function positive(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+function relayErrorDetails(error: unknown): {
+  message: string
+  status?: number
+  reason?: string
+} {
+  if (error instanceof RelayError) {
+    return { message: error.message, status: error.status, reason: error.reason }
+  }
+  if (error instanceof Error) return { message: error.message }
+  return { message: String(error) }
 }
 
 /** 현재 간격을 두 배로 늘리되 설정된 비용 상한을 넘지 않는다. */

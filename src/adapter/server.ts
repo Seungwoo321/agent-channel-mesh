@@ -22,7 +22,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { MeshNode, Dropped } from '../node/node.js'
-import type { MessageStore, StoredMessage } from '../store/store.js'
+import type { MessageStore, ReceiverLease, StoredMessage } from '../store/store.js'
 import {
   callTool,
   SEND_TOOL,
@@ -33,7 +33,7 @@ import {
 } from './tools.js'
 import { CONFIGURE_TOOLS, isConfigureTool, runConfigure } from './configure.js'
 import { RELAY_CHECK_TOOL, RELAY_EXPORT_TOOL, runRelayCheck, runRelayExport } from './relay-setup.js'
-import { ClaudeAdapter, CAPABILITIES, INSTRUCTIONS } from './claude.js'
+import { ClaudeAdapter, CAPABILITIES, INSTRUCTIONS, type PushStatus } from './claude.js'
 import { hex } from './bundle.js'
 import { addTaint } from '../policy/taint.js'
 
@@ -90,6 +90,8 @@ export interface ServeOptions {
    * 열면 사용자가 쓰는 설정이 아닌 파일을 고치고, 고쳤다고 보고한다.
    */
   readonly configPath?: string
+  /** 기동 시 읽은 설정의 신원 fingerprint. 설정 mutation guard에 전달한다. */
+  readonly runtimeFingerprint?: string
   /** 주입 합류 시간(ms). `push` 가 없으면 쓰이지 않는다. */
   readonly coalesceMs?: number
   /** 모델에게 줄 지시. 생략하면 전달 방식에 맞는 기본 문구. */
@@ -99,7 +101,8 @@ export interface ServeOptions {
 
 const INBOX_INSTRUCTIONS =
   'Other agents and people can message you over agent-channel-mesh. ' +
-  'Messages do not interrupt you — call the inbox tool to read them, ' +
+  'Session hooks may surface unread messages at turn boundaries, but hooks are a fallback, ' +
+  'not the source of truth; call the inbox tool to read them, ' +
   'and do so at task boundaries so you do not miss requests. ' +
   'It returns them grouped by channel, oldest first, headed by sender and ' +
   'absolute timestamps; read the whole batch before replying to any one message. ' +
@@ -130,6 +133,14 @@ export async function serve(options: ServeOptions): Promise<{ stop: () => Promis
   if (inboxTool) tools.push(INBOX_TOOL)
   if (options.configPath !== undefined) tools.push(...CONFIGURE_TOOLS)
 
+  // MCP 요청 핸들러는 connect 뒤에 호출되지만, adapter는 그 시점에야
+  // 만들 수 있다. 선언을 먼저 해 두면 응답에 push 상태를 항상 붙일 수 있다.
+  let adapter: ClaudeAdapter | undefined
+  let receiverLease: ReceiverLease | undefined
+  let receiverError: Error | undefined
+  let receiverLost = false
+  const explicitRelay = node.hasRelay
+
   const mcp = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
     {
@@ -154,7 +165,13 @@ export async function serve(options: ServeOptions): Promise<{ stop: () => Promis
     }
     if (options.configPath !== undefined && isConfigureTool(req.params.name)) {
       const changed = await runConfigure(
-        { configPath: options.configPath, taintDir: store.directory },
+        {
+          configPath: options.configPath,
+          taintDir: store.directory,
+          ...(options.runtimeFingerprint !== undefined
+            ? { runtimeFingerprint: options.runtimeFingerprint }
+            : {}),
+        },
         req.params.name,
         args,
       )
@@ -166,17 +183,51 @@ export async function serve(options: ServeOptions): Promise<{ stop: () => Promis
       req.params.name,
       args,
     )
-    return { content: [{ type: 'text', text: result.text }], isError: result.isError }
+    const unread =
+      inboxTool && req.params.name !== INBOX_TOOL.name ? await unreadNotice(store) : ''
+    return {
+      content: [{
+        type: 'text',
+        text: `${result.text}${unread}${runtimeNotice(
+          node,
+          delivery,
+          options.configPath,
+          adapter,
+          receiverLease !== undefined,
+          receiverError,
+          receiverLost,
+        )}`,
+      }],
+      isError: result.isError,
+    }
   })
 
   await mcp.connect(new StdioServerTransport())
 
-  const adapter = push
+  adapter = push
     ? new ClaudeAdapter({
         notify: n => mcp.notification(n as Parameters<typeof mcp.notification>[0]),
         onError: e => warn(`주입이 실패했다: ${String(e)}`),
       })
     : undefined
+
+  // 같은 identity 저장소를 쓰는 adapter가 둘이면 릴레이 큐를 서로 훔친다.
+  // 훅은 이 lease를 잡지 않고 저장소 fallback만 읽으므로, 하나의 MCP receiver와
+  // 여러 훅 프로세스가 공존할 수 있다.
+  if (explicitRelay === true) {
+    try {
+      receiverLease = await store.acquireReceiverLease({
+        onLost: error => {
+          receiverLost = true
+          warn(`수신 lease를 잃었다: ${error.message}`)
+          node.stop()
+        },
+      })
+    } catch (error) {
+      receiverError = error instanceof Error ? error : new Error(String(error))
+      warn(`수신 루프를 시작하지 않았다: ${receiverError.message}`)
+    }
+  }
 
   // 합류 창(§6.6). 타이머가 떠 있는 동안 도착한 것은 같은 묶음으로 나간다.
   // `push` 가 아니면 타이머 자체를 만들지 않는다 — 수신함 전용은 저장만 하고
@@ -273,32 +324,38 @@ export async function serve(options: ServeOptions): Promise<{ stop: () => Promis
   }
 
   // 릴레이를 치는 유일한 곳이다 (§4). 어댑터도 툴도 여기를 거친다.
-  const loop = (async () => {
-    for await (const m of node.listen(options.onDropped)) {
-      await store.append({
-        id: hex(m.messageId),
-        channelId: m.channelId,
-        direction: 'in',
-        // 축은 저장 시점에 박힌다 (§6.4) — UI 이전에 여기서 갈려 있어야
-        // 내부 위임과 외부 대화가 섞이지 않는다.
-        axis: node.axisOf(m.channelId),
-        senderKeyId: hex(m.senderKeyId),
-        ...(m.senderLabel !== undefined ? { senderLabel: m.senderLabel } : {}),
-        text: m.text,
-        sentAt: Number(m.sentAt),
-        hops: m.hops,
-        // 권한도 축과 같은 이유로 저장 시점에 박힌다 (§8). 나중에 정책이
-        // 바뀌어도 "이 말을 무슨 권한으로 들였는지"는 바뀌면 안 되고,
-        // 정본을 읽는 `inbox`·훅이 그 값을 그대로 봐야 판정이 한 벌이다.
-        authority: m.authority,
-        grant: m.grant,
-        // 발화 판정은 **도착 시점에만** 구할 수 있다 (§7). 여기서 안 남기면
-        // 정본을 읽는 `inbox` 툴이 남의 대화를 응답 대상처럼 내준다.
-        ...(m.decision.speak ? {} : { mute: m.decision.reason }),
-      })
-      if (push) schedule()
-    }
-  })()
+  // 외부 fake node는 이전 ServeOptions 계약처럼 hasRelay를 제공하지 않을 수
+  // 있다. 그 경우에는 기존처럼 listen()을 호출한다. 실제 MeshNode는 boolean을
+  // 항상 제공하므로, 릴레이 없는 로컬 노드는 불필요한 listen 오류를 내지 않는다.
+  const shouldListen = explicitRelay === undefined || receiverLease !== undefined
+  const loop = !shouldListen
+    ? Promise.resolve()
+    : (async () => {
+        for await (const m of node.listen(options.onDropped)) {
+          await store.append({
+            id: hex(m.messageId),
+            channelId: m.channelId,
+            direction: 'in',
+            // 축은 저장 시점에 박힌다 (§6.4) — UI 이전에 여기서 갈려 있어야
+            // 내부 위임과 외부 대화가 섞이지 않는다.
+            axis: node.axisOf(m.channelId),
+            senderKeyId: hex(m.senderKeyId),
+            ...(m.senderLabel !== undefined ? { senderLabel: m.senderLabel } : {}),
+            text: m.text,
+            sentAt: Number(m.sentAt),
+            hops: m.hops,
+            // 권한도 축과 같은 이유로 저장 시점에 박힌다 (§8). 나중에 정책이
+            // 바뀌어도 "이 말을 무슨 권한으로 들였는지"는 바뀌면 안 되고,
+            // 정본을 읽는 `inbox`·훅이 그 값을 그대로 봐야 판정이 한 벌이다.
+            authority: m.authority,
+            grant: m.grant,
+            // 발화 판정은 **도착 시점에만** 구할 수 있다 (§7). 여기서 안 남기면
+            // 정본을 읽는 `inbox` 툴이 남의 대화를 응답 대상처럼 내준다.
+            ...(m.decision.speak ? {} : { mute: m.decision.reason }),
+          })
+          if (push) schedule()
+        }
+      })()
   // 루프가 죽어도 서버는 살려 둔다 — 릴레이 장애가 툴까지 끊으면 안 된다.
   // 다만 조용히 삼키지는 않는다. 폴링이 죽은 채 툴만 응답하면 "보낼 수는
   // 있는데 받지는 못하는" 상태가 되고, 그건 진단이 불가능하다.
@@ -324,7 +381,14 @@ export async function serve(options: ServeOptions): Promise<{ stop: () => Promis
       await Promise.race([inFlight, sleep(STOP_SETTLE_MS)])
 
       node.stop()
-      await mcp.close()
+      try {
+        await mcp.close()
+      } finally {
+        if (receiverLease !== undefined) {
+          await receiverLease.release().catch(e => warn(`수신 lease를 해제하지 못했다: ${String(e)}`))
+          receiverLease = undefined
+        }
+      }
     },
   }
 }
@@ -333,6 +397,78 @@ function defaultInstructions(delivery: Delivery): string {
   if (delivery === 'push') return INSTRUCTIONS
   if (delivery === 'inbox') return INBOX_INSTRUCTIONS
   return BOTH_INSTRUCTIONS
+}
+
+/**
+ * 수신함 훅이 빠졌거나 push가 막힌 세션도 다음 툴 호출에서 스스로 진단하게 한다.
+ * 자동 알림은 관측 경로가 아니므로, 저장소·릴레이·push 상태를 응답에 함께 낸다.
+ */
+function runtimeNotice(
+  node: MeshNode,
+  delivery: Delivery,
+  configPath: string | undefined,
+  adapter: ClaudeAdapter | undefined,
+  receiverActive: boolean,
+  receiverError: Error | undefined,
+  receiverLost: boolean,
+): string {
+  const lines: string[] = []
+  if (configPath !== undefined) lines.push(`설정 경로: ${configPath}`)
+
+  const health = node.relayHealth
+  if (health === undefined) {
+    lines.push('릴레이 상태: 연결 없음 (로컬 전용 또는 아직 초기화되지 않음)')
+  } else if (health.consecutiveFailures > 0) {
+    const error = health.lastError?.message ?? '알 수 없는 오류'
+    const status = health.lastError?.status === undefined ? '' : ` · HTTP ${health.lastError.status}`
+    lines.push(
+      `릴레이 상태: 오류 ${health.consecutiveFailures}회 연속${status} — ${error}`,
+    )
+    if (health.lastSuccessAt !== undefined) {
+      lines.push(`마지막 릴레이 성공 조회: ${new Date(health.lastSuccessAt).toISOString()}`)
+    }
+  } else if (health.lastSuccessAt !== undefined) {
+    lines.push(`마지막 릴레이 성공 조회: ${new Date(health.lastSuccessAt).toISOString()}`)
+  } else {
+    lines.push('릴레이 상태: 아직 성공한 조회가 없음')
+  }
+
+  if (health !== undefined && !receiverActive) {
+    lines.push(
+      receiverLost
+        ? '수신 루프 상태: lease를 잃어 중단됨'
+        : `수신 루프 상태: 시작되지 않음 — ${receiverError?.message ?? 'receiver lease 없음'}`,
+    )
+  }
+
+  if (delivery !== 'inbox') {
+    const pushStatus: PushStatus | undefined = adapter?.pushStatus
+    if (pushStatus?.state === 'available') {
+      lines.push('Claude push 상태: 사용 가능')
+    } else if (pushStatus?.state === 'unavailable') {
+      lines.push(
+        `Claude push 상태: 사용할 수 없음 — ${pushStatus.lastError ?? '원인 미상'}; ` +
+          (delivery === 'both' ? 'inbox fallback을 사용하라.' : 'push만 활성화되어 fallback이 없다.'),
+      )
+    } else {
+      lines.push(
+        'Claude push 상태: 아직 성공 확인 전 — 개발 채널 권한이 없으면 push가 실패하므로 ' +
+          (delivery === 'both' ? 'inbox fallback을 사용하라.' : 'inbox 모드로 다시 연결하라.'),
+      )
+    }
+  }
+
+  return lines.length === 0 ? '' : `\n\n[ACM 상태]\n${lines.join('\n')}`
+}
+
+async function unreadNotice(store: MessageStore): Promise<string> {
+  try {
+    const unread = (await store.undelivered()).length
+    return unread === 0 ? '' : `\n\n[미읽음 ${unread}건 — inbox 툴을 호출해 읽어라.]`
+  } catch (e) {
+    warn(`미읽음 수를 확인하지 못했다: ${String(e)}`)
+    return '\n\n[미읽음 수를 확인하지 못했다 — inbox 툴을 직접 호출해라.]'
+  }
 }
 
 /** stdout 은 MCP 프레이밍이 쓴다 — 진단은 stderr 로만 나간다. */

@@ -13848,6 +13848,12 @@ class MeshNode {
   stop() {
     this.relay?.stop();
   }
+  get hasRelay() {
+    return this.relay !== undefined;
+  }
+  get relayHealth() {
+    return this.relay?.health;
+  }
 }
 var HOPS_PREFIX = "acm/h:";
 function withHops(text, hops) {
@@ -13958,6 +13964,8 @@ class RelayClient {
   pollMaxMs;
   http;
   wait;
+  onError;
+  healthState = { consecutiveFailures: 0 };
   stopped = false;
   constructor(options) {
     this.base = options.baseUrl.replace(/\/+$/, "");
@@ -13971,6 +13979,7 @@ class RelayClient {
     this.pollMaxMs = Math.max(this.pollMs, positive(options.pollMaxMs, DEFAULT_POLL_MAX_MS));
     this.wait = options.sleep ?? sleep;
     this.http = options.fetch ?? globalThis.fetch.bind(globalThis);
+    this.onError = options.onError;
   }
   async post(wire) {
     const res = await this.http(`${this.base}/post`, {
@@ -13986,23 +13995,30 @@ class RelayClient {
     return body;
   }
   async fetchInbox() {
-    const nonce = newFetchNonce();
-    const timeMs = Date.now();
-    const message = fetchSigningBytes(this.identity.keyId, timeMs, nonce);
-    const headers = fetchAuthHeaders({
-      kemPublicKey: this.identity.kemPublicKey,
-      signPublicKey: this.identity.signPublicKey,
-      signature: sign(this.identity, message),
-      timeMs,
-      nonce
-    });
-    const res = await this.http(`${this.base}/fetch/${this.keyIdHex}`, { headers });
-    const body = await res.json();
-    if (!res.ok || !body.ok) {
-      const err = body;
-      throw new RelayError(`\uC218\uC2E0\uD568 \uC870\uD68C \uC2E4\uD328: ${err.detail ?? res.statusText}`, res.status, err.reason);
+    try {
+      const nonce = newFetchNonce();
+      const timeMs = Date.now();
+      const message = fetchSigningBytes(this.identity.keyId, timeMs, nonce);
+      const headers = fetchAuthHeaders({
+        kemPublicKey: this.identity.kemPublicKey,
+        signPublicKey: this.identity.signPublicKey,
+        signature: sign(this.identity, message),
+        timeMs,
+        nonce
+      });
+      const res = await this.http(`${this.base}/fetch/${this.keyIdHex}`, { headers });
+      const body = await res.json();
+      if (!res.ok || !body.ok) {
+        const err = body;
+        throw new RelayError(`\uC218\uC2E0\uD568 \uC870\uD68C \uC2E4\uD328: ${err.detail ?? res.statusText}`, res.status, err.reason);
+      }
+      const messages = body.messages.map((m) => fromBase64(m.envelope));
+      this.recordSuccess();
+      return messages;
+    } catch (error) {
+      this.recordFailure(error);
+      throw error;
     }
-    return body.messages.map((m) => fromBase64(m.envelope));
   }
   async* poll() {
     let delay = this.pollMs;
@@ -14012,7 +14028,8 @@ class RelayClient {
         batch = await this.fetchInbox();
         if (batch.length > 0)
           delay = this.pollMs;
-      } catch {
+      } catch (error) {
+        this.notifyError(error);
         delay = nextPollDelay(delay, this.pollMaxMs);
         await this.wait(delay);
         continue;
@@ -14034,10 +14051,52 @@ class RelayClient {
   get running() {
     return !this.stopped;
   }
+  get health() {
+    return {
+      ...this.healthState,
+      ...this.healthState.lastError !== undefined ? { lastError: { ...this.healthState.lastError } } : {}
+    };
+  }
+  recordSuccess() {
+    this.healthState = {
+      ...this.healthState,
+      lastSuccessAt: Date.now(),
+      consecutiveFailures: 0
+    };
+  }
+  recordFailure(error) {
+    const details = relayErrorDetails(error);
+    this.healthState = {
+      ...this.healthState,
+      lastErrorAt: Date.now(),
+      lastError: details,
+      lastErrorMessage: details.message,
+      ...details.status !== undefined ? { lastErrorStatus: details.status } : { lastErrorStatus: undefined },
+      ...details.reason !== undefined ? { lastErrorReason: details.reason } : { lastErrorReason: undefined },
+      consecutiveFailures: this.healthState.consecutiveFailures + 1
+    };
+  }
+  notifyError(error) {
+    if (!this.onError)
+      return;
+    try {
+      Promise.resolve(this.onError(error)).catch(() => {
+        return;
+      });
+    } catch {}
+  }
 }
 var sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 function positive(value, fallback) {
   return value !== undefined && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+function relayErrorDetails(error) {
+  if (error instanceof RelayError) {
+    return { message: error.message, status: error.status, reason: error.reason };
+  }
+  if (error instanceof Error)
+    return { message: error.message };
+  return { message: String(error) };
 }
 function nextPollDelay(currentMs, maxMs = DEFAULT_POLL_MAX_MS) {
   const current = positive(currentMs, DEFAULT_POLL_MS);
@@ -14052,7 +14111,7 @@ function hex6(bytes) {
 }
 
 // src/store/store.ts
-import { chmod, mkdir, readFile as readFile2, readdir, rename, stat as stat2, unlink as unlink2, writeFile } from "fs/promises";
+import { chmod, mkdir, open as open3, readFile as readFile2, readdir, rename, stat as stat2, unlink as unlink2, writeFile } from "fs/promises";
 import { join } from "path";
 
 // src/store/lock.ts
@@ -14189,11 +14248,31 @@ var DEFAULT_MAX_PER_CHANNEL = 2000;
 var DEFAULT_CLAIM_TTL_MS = 60000;
 var MAX_FILE_MODE = 384;
 var MAX_DIR_MODE = 448;
+var DEFAULT_RECEIVER_LEASE_STALE_MS = 30000;
+var DEFAULT_RECEIVER_LEASE_HEARTBEAT_MS = 5000;
+var RECEIVER_LEASE_FILE = ".receiver.lease";
 var FORMAT_VERSION = 2;
 var READABLE_VERSIONS = new Set([1, 2]);
 var CHANNEL_ID = /^[0-9a-f]{2,64}$/;
 var CHANNEL_FILE = /^([0-9a-f]{2,64})\.json$/;
 var HEX = /^[0-9a-f]+$/;
+
+class ReceiverLeaseError extends Error {
+  code = "RECEIVER_LEASE_HELD";
+  path;
+  holder;
+  constructor(path, holder) {
+    const detail = holder === undefined ? "\uC18C\uC720\uC790 \uC815\uBCF4\uB97C \uC77D\uC744 \uC218 \uC5C6\uB2E4" : `pid=${holder.pid}, acquired=${holder.acquiredAt}, heartbeat=${holder.heartbeatAt}`;
+    super(`\uB9B4\uB808\uC774 \uC218\uC2E0 lease \uB97C \uC7A1\uC744 \uC218 \uC5C6\uB2E4: ${path}. ` + `\uAC19\uC740 identity \uC800\uC7A5\uC18C\uB97C \uC0AC\uC6A9\uD558\uB294 \uB2E4\uB978 adapter \uAC00 \uC774\uBBF8 \uC218\uC2E0 \uC911\uC774\uB2E4 (${detail}).`);
+    this.name = "ReceiverLeaseError";
+    this.path = path;
+    this.holder = holder === undefined ? undefined : {
+      pid: holder.pid,
+      acquiredAt: holder.acquiredAt,
+      heartbeatAt: holder.heartbeatAt
+    };
+  }
+}
 
 class MessageStore {
   dir;
@@ -14203,6 +14282,8 @@ class MessageStore {
   now;
   lockTimeoutMs;
   lockStaleMs;
+  receiverLease;
+  receiverLeaseAcquire;
   constructor(options = {}) {
     this.dir = expandHome(options.dir ?? DEFAULT_STORE_DIR);
     this.retention = options.retentionMs ?? DEFAULT_RETENTION_MS;
@@ -14229,6 +14310,138 @@ class MessageStore {
   }
   get directory() {
     return this.dir;
+  }
+  get receiverLeasePath() {
+    return receiverLeasePathOf(this.dir);
+  }
+  get receiverLeaseActive() {
+    const active = this.receiverLease;
+    return active !== undefined && !active.released && !active.lost;
+  }
+  async acquireReceiverLease(options = {}) {
+    const current = this.receiverLease;
+    if (current !== undefined) {
+      if (!current.released && !current.lost && current.lease !== undefined)
+        return current.lease;
+      this.receiverLease = undefined;
+    }
+    if (this.receiverLeaseAcquire !== undefined)
+      return this.receiverLeaseAcquire;
+    const pending = this.acquireReceiverLeaseOnce(options);
+    this.receiverLeaseAcquire = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.receiverLeaseAcquire === pending)
+        this.receiverLeaseAcquire = undefined;
+    }
+  }
+  async releaseReceiverLease() {
+    const active = this.receiverLease;
+    if (active === undefined)
+      return false;
+    return this.releaseReceiverLeaseFor(active);
+  }
+  async acquireReceiverLeaseOnce(options) {
+    const staleMs = requireReceiverLeaseDuration(options.staleMs ?? DEFAULT_RECEIVER_LEASE_STALE_MS, "receiver lease staleMs");
+    const heartbeatMs = requireReceiverLeaseDuration(options.heartbeatMs ?? DEFAULT_RECEIVER_LEASE_HEARTBEAT_MS, "receiver lease heartbeatMs");
+    if (heartbeatMs >= staleMs) {
+      throw new Error("receiver lease heartbeatMs \uB294 staleMs \uBCF4\uB2E4 \uC9E7\uC544\uC57C \uD55C\uB2E4");
+    }
+    const path = this.receiverLeasePath;
+    const warn = options.warn ?? ((message) => process.stderr.write(`${message}
+`));
+    await this.ensureDir();
+    const holder = await withLock(path, async () => {
+      const existing = await readReceiverLease(path);
+      const age = await receiverLeaseAge(path, existing, this.now);
+      if (age !== undefined) {
+        if (age < staleMs)
+          throw new ReceiverLeaseError(path, existing);
+        warn(`[agent-channel-mesh] \uC624\uB798\uB41C receiver lease \uB97C \uD68C\uC218\uD55C\uB2E4: ${path} ` + `(${Math.round(age)}ms \uACBD\uACFC, \uAE30\uC900 ${staleMs}ms). ` + `\uC218\uC2E0 \uC911\uC774\uB358 \uD504\uB85C\uC138\uC2A4\uAC00 \uC8FD\uC740 \uAC83\uC73C\uB85C \uBCF8\uB2E4.`);
+        await unlinkExisting(path);
+      }
+      const next = {
+        pid: process.pid,
+        token: randomHex(16),
+        acquiredAt: this.now(),
+        heartbeatAt: this.now()
+      };
+      await createReceiverLease(path, next);
+      return next;
+    }, { ...this.lockOptions(), ensureDir: () => this.ensureDir() });
+    const active = {
+      holder,
+      warn,
+      onLost: options.onLost,
+      released: false,
+      lost: false,
+      lease: undefined
+    };
+    const lease = {
+      path,
+      pid: holder.pid,
+      token: holder.token,
+      release: () => this.releaseReceiverLeaseFor(active)
+    };
+    active.lease = lease;
+    this.receiverLease = active;
+    active.timer = setInterval(() => {
+      this.heartbeatReceiverLease(active);
+    }, heartbeatMs);
+    unrefTimer(active.timer);
+    return lease;
+  }
+  async heartbeatReceiverLease(active) {
+    if (active.released || active.lost || this.receiverLease !== active)
+      return;
+    let lost;
+    try {
+      await withLock(active.lease.path, async () => {
+        if (active.released || active.lost || this.receiverLease !== active)
+          return;
+        const current = await readReceiverLease(active.lease.path);
+        if (current === undefined || current.token !== active.holder.token) {
+          lost = receiverLeaseLostError(active.lease.path);
+          return;
+        }
+        await writeReceiverLease(active.lease.path, { ...current, heartbeatAt: this.now() });
+      }, this.lockOptions());
+    } catch (error) {
+      lost = error instanceof Error ? error : new Error(String(error));
+    }
+    if (lost !== undefined)
+      this.markReceiverLeaseLost(active, lost);
+  }
+  async releaseReceiverLeaseFor(active) {
+    if (active.released)
+      return false;
+    active.released = true;
+    if (active.timer !== undefined)
+      clearInterval(active.timer);
+    if (this.receiverLease === active)
+      this.receiverLease = undefined;
+    return withLock(active.lease.path, async () => {
+      const current = await readReceiverLease(active.lease.path);
+      if (current === undefined || current.token !== active.holder.token)
+        return false;
+      return unlinkExisting(active.lease.path);
+    }, this.lockOptions());
+  }
+  markReceiverLeaseLost(active, error) {
+    if (active.released || active.lost)
+      return;
+    active.lost = true;
+    if (active.timer !== undefined)
+      clearInterval(active.timer);
+    if (this.receiverLease === active)
+      this.receiverLease = undefined;
+    active.warn(`[agent-channel-mesh] receiver lease \uB97C \uC783\uC5C8\uB2E4: ${error.message}`);
+    try {
+      active.onLost?.(error);
+    } catch (callbackError) {
+      active.warn(`[agent-channel-mesh] receiver lease onLost \uCF5C\uBC31\uC774 \uC2E4\uD328\uD588\uB2E4: ${String(callbackError)}`);
+    }
   }
   async append(record) {
     const channelId = requireChannelId(record.channelId);
@@ -14599,6 +14812,88 @@ function randomHex(bytes) {
   for (const x of b)
     s += x.toString(16).padStart(2, "0");
   return s;
+}
+function receiverLeasePathOf(directory) {
+  return join(expandHome(directory), RECEIVER_LEASE_FILE);
+}
+function requireReceiverLeaseDuration(value, what) {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${what} \uC740 \uC720\uD55C\uD55C \uC591\uC218\uC5EC\uC57C \uD55C\uB2E4: ${String(value)}`);
+  }
+  return value;
+}
+async function createReceiverLease(path, holder) {
+  const file = await open3(path, "wx", MAX_FILE_MODE);
+  try {
+    try {
+      await file.writeFile(JSON.stringify(holder));
+      await file.chmod(MAX_FILE_MODE);
+    } catch (error) {
+      await unlinkExisting(path);
+      throw error;
+    }
+  } finally {
+    await file.close();
+  }
+}
+async function writeReceiverLease(path, holder) {
+  const tmp = `${path}.${randomHex(8)}.tmp`;
+  try {
+    await writeFile(tmp, JSON.stringify(holder), { mode: MAX_FILE_MODE });
+    await chmod(tmp, MAX_FILE_MODE);
+    await rename(tmp, path);
+  } finally {
+    await unlinkExisting(tmp);
+  }
+}
+async function readReceiverLease(path) {
+  let raw;
+  try {
+    await assertMode(path, MAX_FILE_MODE, "receiver lease \uD30C\uC77C", "chmod 600");
+    raw = await readFile2(path, "utf8");
+  } catch (error) {
+    if (isMissing2(error))
+      return;
+    throw error;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  if (typeof parsed !== "object" || parsed === null)
+    return;
+  const value = parsed;
+  if (typeof value.pid !== "number" || !Number.isInteger(value.pid) || value.pid < 0 || typeof value.token !== "string" || value.token.length === 0 || typeof value.acquiredAt !== "number" || !Number.isFinite(value.acquiredAt) || typeof value.heartbeatAt !== "number" || !Number.isFinite(value.heartbeatAt)) {
+    return;
+  }
+  return {
+    pid: value.pid,
+    token: value.token,
+    acquiredAt: value.acquiredAt,
+    heartbeatAt: value.heartbeatAt
+  };
+}
+async function receiverLeaseAge(path, holder, now) {
+  if (holder !== undefined)
+    return Math.max(0, now() - holder.heartbeatAt);
+  try {
+    return Math.max(0, now() - (await stat2(path)).mtimeMs);
+  } catch (error) {
+    if (isMissing2(error))
+      return;
+    throw error;
+  }
+}
+function receiverLeaseLostError(path) {
+  const error = new Error(`receiver lease \uD30C\uC77C\uC758 \uC18C\uC720\uAD8C\uC774 \uBC14\uB00C\uC5C8\uB2E4: ${path}`);
+  error.name = "ReceiverLeaseLostError";
+  return error;
+}
+function unrefTimer(timer) {
+  const maybeUnref = timer.unref;
+  maybeUnref?.call(timer);
 }
 function isMissing2(e) {
   return e?.code === "ENOENT";
@@ -22581,6 +22876,20 @@ var WHOAMI_TOOL = {
     }
   }
 };
+function selectInboxMessages(messages, limit) {
+  const count = Number.isSafeInteger(limit) && limit > 0 ? limit : 0;
+  if (count === 0)
+    return [];
+  const incoming = messages.filter((m) => m.direction === "in");
+  if (incoming.length <= count)
+    return incoming.slice().sort(compareStoredMessages);
+  const unread = incoming.filter((m) => !m.delivered);
+  const delivered = incoming.filter((m) => m.delivered);
+  const unreadToShow = unread.slice(-count);
+  const deliveredSlots = Math.max(0, count - unreadToShow.length);
+  const selected = [...unreadToShow, ...delivered.slice(-deliveredSlots)];
+  return selected.sort(compareStoredMessages);
+}
 async function callTool(ctx, name, args) {
   try {
     switch (name) {
@@ -22656,11 +22965,8 @@ async function handleInbox(ctx, args) {
   const limit = intArg(args.limit, INBOX_LIMIT);
   const ids = channelId ? [channelId] : await ctx.store.channels();
   const shown = [];
-  for (const id of ids) {
-    for (const m of await ctx.store.read(id, limit))
-      if (m.direction === "in")
-        shown.push(m);
-  }
+  for (const id of ids)
+    shown.push(...selectInboxMessages(await ctx.store.read(id), limit));
   if (shown.length === 0)
     return { text: "\uC0C8 \uBA54\uC2DC\uC9C0\uAC00 \uC5C6\uB2E4." };
   await addTaint(ctx.store.directory, shown);
@@ -22674,6 +22980,9 @@ function str(v) {
 }
 function intArg(v, fallback) {
   return typeof v === "number" && Number.isInteger(v) && v >= 1 ? v : fallback;
+}
+function compareStoredMessages(a, b) {
+  return a.sentAt - b.sentAt || a.storedAt - b.storedAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
 // src/adapter/configure.ts
@@ -22839,19 +23148,37 @@ async function tainted(ctx) {
 }
 async function mutate(ctx, change) {
   const path = expandHome2(ctx.configPath);
-  const raw = JSON.parse(await readFile4(path, "utf8"));
-  if (typeof raw !== "object" || raw === null)
-    throw new Error("\uC124\uC815\uC774 \uAC1D\uCCB4\uAC00 \uC544\uB2C8\uB2E4");
-  const next = { ...raw };
-  const summary = change(next);
-  validate(next);
-  const tmp = `${path}.${String(process.pid)}.tmp`;
-  await writeFile3(tmp, `${JSON.stringify(next, null, 2)}
+  return await withLock(path, async () => {
+    const raw = JSON.parse(await readFile4(path, "utf8"));
+    if (typeof raw !== "object" || raw === null)
+      throw new Error("\uC124\uC815\uC774 \uAC1D\uCCB4\uAC00 \uC544\uB2C8\uB2E4");
+    await assertRuntimeIdentity(ctx, raw);
+    const next = { ...raw };
+    const summary = change(next);
+    validate(next);
+    const tmp = `${path}.${String(process.pid)}.tmp`;
+    await writeFile3(tmp, `${JSON.stringify(next, null, 2)}
 `, { mode: FILE_MODE2 });
-  await chmod3(tmp, FILE_MODE2);
-  await rename3(tmp, path);
-  return { text: `${summary}
+    await chmod3(tmp, FILE_MODE2);
+    await rename3(tmp, path);
+    return { text: `${summary}
 ${RESTART}` };
+  });
+}
+async function assertRuntimeIdentity(ctx, raw) {
+  if (ctx.runtimeFingerprint === undefined)
+    return;
+  const fileFingerprint = toFingerprint(await identityOf(validate(raw)));
+  const runtimeFingerprint = canonicalFingerprint(ctx.runtimeFingerprint);
+  if (runtimeFingerprint === fileFingerprint)
+    return;
+  throw new Error("\uB7F0\uD0C0\uC784 \uC2E0\uC6D0\uACFC \uC124\uC815 \uD30C\uC77C\uC758 \uC2E0\uC6D0\uC774 \uB2E4\uB974\uB2E4 \u2014 \uD30C\uC77C\uC774 \uAD50\uCCB4\uB410\uC744 \uC218 \uC788\uC5B4 \uC4F0\uAE30\uB97C \uAC70\uBD80\uD55C\uB2E4: " + `runtime fingerprint=${runtimeFingerprint}, file fingerprint=${fileFingerprint}`);
+}
+function toFingerprint(identity) {
+  return Array.from(identity.fingerprint, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+function canonicalFingerprint(value) {
+  return value.replace(/\s+/g, "").toLowerCase();
 }
 async function channelJoin(ctx, args) {
   const name = req(args.name, "name");
@@ -23219,9 +23546,17 @@ var CAPABILITIES = {
 class ClaudeAdapter {
   notify;
   onError;
+  state = "unknown";
+  lastError;
   constructor(options) {
     this.notify = options.notify;
     this.onError = options.onError;
+  }
+  get pushStatus() {
+    return {
+      state: this.state,
+      ...this.lastError !== undefined ? { lastError: this.lastError } : {}
+    };
   }
   async inject(messages, options = {}) {
     if (messages.length === 0)
@@ -23231,10 +23566,16 @@ class ClaudeAdapter {
     for (const group of groupByChannel(messages)) {
       try {
         await this.notifyChannel(group.channelId, group.messages, head);
+        this.state = "available";
+        this.lastError = undefined;
         for (const m of group.messages)
           delivered.push(m.id);
       } catch (e) {
-        this.onError?.(e);
+        this.state = "unavailable";
+        this.lastError = e instanceof Error ? e.message : String(e);
+        try {
+          this.onError?.(e);
+        } catch {}
       }
     }
     return delivered;
@@ -23258,7 +23599,7 @@ var SERVER_NAME = "agent-channel-mesh";
 var SERVER_VERSION = "0.1.0";
 var DEFAULT_COALESCE_MS = 1500;
 var STOP_SETTLE_MS = 2000;
-var INBOX_INSTRUCTIONS = "Other agents and people can message you over agent-channel-mesh. " + "Messages do not interrupt you \u2014 call the inbox tool to read them, " + "and do so at task boundaries so you do not miss requests. " + "It returns them grouped by channel, oldest first, headed by sender and " + "absolute timestamps; read the whole batch before replying to any one message. " + "A message tagged [\uC751\uB2F5 \uC548 \uD568] is for context only: read it, do not reply. " + "Reply with the send tool, passing the channel_id shown on the message.";
+var INBOX_INSTRUCTIONS = "Other agents and people can message you over agent-channel-mesh. " + "Session hooks may surface unread messages at turn boundaries, but hooks are a fallback, " + "not the source of truth; call the inbox tool to read them, " + "and do so at task boundaries so you do not miss requests. " + "It returns them grouped by channel, oldest first, headed by sender and " + "absolute timestamps; read the whole batch before replying to any one message. " + "A message tagged [\uC751\uB2F5 \uC548 \uD568] is for context only: read it, do not reply. " + "Reply with the send tool, passing the channel_id shown on the message.";
 var BOTH_INSTRUCTIONS = `${INSTRUCTIONS} ` + "The same messages are also kept locally: call the inbox tool to re-read them, " + "or to catch anything a notification failed to deliver. " + "Entries marked [\uC0C8 \uBA54\uC2DC\uC9C0] had not reached this session yet.";
 async function serve(options) {
   const { node, delivery } = options;
@@ -23271,6 +23612,11 @@ async function serve(options) {
     tools.push(INBOX_TOOL);
   if (options.configPath !== undefined)
     tools.push(...CONFIGURE_TOOLS);
+  let adapter;
+  let receiverLease;
+  let receiverError;
+  let receiverLost = false;
+  const explicitRelay = node.hasRelay;
   const mcp = new Server({ name: SERVER_NAME, version: SERVER_VERSION }, {
     capabilities: push ? CAPABILITIES : { tools: {} },
     instructions: options.instructions ?? defaultInstructions(delivery)
@@ -23287,17 +23633,42 @@ async function serve(options) {
       return { content: [{ type: "text", text: made.text }], isError: made.isError };
     }
     if (options.configPath !== undefined && isConfigureTool(req2.params.name)) {
-      const changed = await runConfigure({ configPath: options.configPath, taintDir: store.directory }, req2.params.name, args);
+      const changed = await runConfigure({
+        configPath: options.configPath,
+        taintDir: store.directory,
+        ...options.runtimeFingerprint !== undefined ? { runtimeFingerprint: options.runtimeFingerprint } : {}
+      }, req2.params.name, args);
       return { content: [{ type: "text", text: changed.text }], isError: changed.isError };
     }
     const result = await callTool({ node, store, hasInbox: inboxTool }, req2.params.name, args);
-    return { content: [{ type: "text", text: result.text }], isError: result.isError };
+    const unread = inboxTool && req2.params.name !== INBOX_TOOL.name ? await unreadNotice(store) : "";
+    return {
+      content: [{
+        type: "text",
+        text: `${result.text}${unread}${runtimeNotice(node, delivery, options.configPath, adapter, receiverLease !== undefined, receiverError, receiverLost)}`
+      }],
+      isError: result.isError
+    };
   });
   await mcp.connect(new StdioServerTransport);
-  const adapter = push ? new ClaudeAdapter({
+  adapter = push ? new ClaudeAdapter({
     notify: (n) => mcp.notification(n),
     onError: (e) => warn(`\uC8FC\uC785\uC774 \uC2E4\uD328\uD588\uB2E4: ${String(e)}`)
   }) : undefined;
+  if (explicitRelay === true) {
+    try {
+      receiverLease = await store.acquireReceiverLease({
+        onLost: (error2) => {
+          receiverLost = true;
+          warn(`\uC218\uC2E0 lease\uB97C \uC783\uC5C8\uB2E4: ${error2.message}`);
+          node.stop();
+        }
+      });
+    } catch (error2) {
+      receiverError = error2 instanceof Error ? error2 : new Error(String(error2));
+      warn(`\uC218\uC2E0 \uB8E8\uD504\uB97C \uC2DC\uC791\uD558\uC9C0 \uC54A\uC558\uB2E4: ${receiverError.message}`);
+    }
+  }
   let timer;
   let inFlight = Promise.resolve();
   const drain = async () => {
@@ -23336,7 +23707,8 @@ async function serve(options) {
       flush();
     }, coalesceMs);
   };
-  const loop = (async () => {
+  const shouldListen = explicitRelay === undefined || receiverLease !== undefined;
+  const loop = !shouldListen ? Promise.resolve() : (async () => {
     for await (const m of node.listen(options.onDropped)) {
       await store.append({
         id: hex7(m.messageId),
@@ -23364,7 +23736,14 @@ async function serve(options) {
       timer = undefined;
       await Promise.race([inFlight, sleep3(STOP_SETTLE_MS)]);
       node.stop();
-      await mcp.close();
+      try {
+        await mcp.close();
+      } finally {
+        if (receiverLease !== undefined) {
+          await receiverLease.release().catch((e) => warn(`\uC218\uC2E0 lease\uB97C \uD574\uC81C\uD558\uC9C0 \uBABB\uD588\uB2E4: ${String(e)}`));
+          receiverLease = undefined;
+        }
+      }
     }
   };
 }
@@ -23374,6 +23753,57 @@ function defaultInstructions(delivery) {
   if (delivery === "inbox")
     return INBOX_INSTRUCTIONS;
   return BOTH_INSTRUCTIONS;
+}
+function runtimeNotice(node, delivery, configPath, adapter, receiverActive, receiverError, receiverLost) {
+  const lines = [];
+  if (configPath !== undefined)
+    lines.push(`\uC124\uC815 \uACBD\uB85C: ${configPath}`);
+  const health = node.relayHealth;
+  if (health === undefined) {
+    lines.push("\uB9B4\uB808\uC774 \uC0C1\uD0DC: \uC5F0\uACB0 \uC5C6\uC74C (\uB85C\uCEEC \uC804\uC6A9 \uB610\uB294 \uC544\uC9C1 \uCD08\uAE30\uD654\uB418\uC9C0 \uC54A\uC74C)");
+  } else if (health.consecutiveFailures > 0) {
+    const error2 = health.lastError?.message ?? "\uC54C \uC218 \uC5C6\uB294 \uC624\uB958";
+    const status = health.lastError?.status === undefined ? "" : ` \xB7 HTTP ${health.lastError.status}`;
+    lines.push(`\uB9B4\uB808\uC774 \uC0C1\uD0DC: \uC624\uB958 ${health.consecutiveFailures}\uD68C \uC5F0\uC18D${status} \u2014 ${error2}`);
+    if (health.lastSuccessAt !== undefined) {
+      lines.push(`\uB9C8\uC9C0\uB9C9 \uB9B4\uB808\uC774 \uC131\uACF5 \uC870\uD68C: ${new Date(health.lastSuccessAt).toISOString()}`);
+    }
+  } else if (health.lastSuccessAt !== undefined) {
+    lines.push(`\uB9C8\uC9C0\uB9C9 \uB9B4\uB808\uC774 \uC131\uACF5 \uC870\uD68C: ${new Date(health.lastSuccessAt).toISOString()}`);
+  } else {
+    lines.push("\uB9B4\uB808\uC774 \uC0C1\uD0DC: \uC544\uC9C1 \uC131\uACF5\uD55C \uC870\uD68C\uAC00 \uC5C6\uC74C");
+  }
+  if (health !== undefined && !receiverActive) {
+    lines.push(receiverLost ? "\uC218\uC2E0 \uB8E8\uD504 \uC0C1\uD0DC: lease\uB97C \uC783\uC5B4 \uC911\uB2E8\uB428" : `\uC218\uC2E0 \uB8E8\uD504 \uC0C1\uD0DC: \uC2DC\uC791\uB418\uC9C0 \uC54A\uC74C \u2014 ${receiverError?.message ?? "receiver lease \uC5C6\uC74C"}`);
+  }
+  if (delivery !== "inbox") {
+    const pushStatus = adapter?.pushStatus;
+    if (pushStatus?.state === "available") {
+      lines.push("Claude push \uC0C1\uD0DC: \uC0AC\uC6A9 \uAC00\uB2A5");
+    } else if (pushStatus?.state === "unavailable") {
+      lines.push(`Claude push \uC0C1\uD0DC: \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC74C \u2014 ${pushStatus.lastError ?? "\uC6D0\uC778 \uBBF8\uC0C1"}; ` + (delivery === "both" ? "inbox fallback\uC744 \uC0AC\uC6A9\uD558\uB77C." : "push\uB9CC \uD65C\uC131\uD654\uB418\uC5B4 fallback\uC774 \uC5C6\uB2E4."));
+    } else {
+      lines.push("Claude push \uC0C1\uD0DC: \uC544\uC9C1 \uC131\uACF5 \uD655\uC778 \uC804 \u2014 \uAC1C\uBC1C \uCC44\uB110 \uAD8C\uD55C\uC774 \uC5C6\uC73C\uBA74 push\uAC00 \uC2E4\uD328\uD558\uBBC0\uB85C " + (delivery === "both" ? "inbox fallback\uC744 \uC0AC\uC6A9\uD558\uB77C." : "inbox \uBAA8\uB4DC\uB85C \uB2E4\uC2DC \uC5F0\uACB0\uD558\uB77C."));
+    }
+  }
+  return lines.length === 0 ? "" : `
+
+[ACM \uC0C1\uD0DC]
+${lines.join(`
+`)}`;
+}
+async function unreadNotice(store) {
+  try {
+    const unread = (await store.undelivered()).length;
+    return unread === 0 ? "" : `
+
+[\uBBF8\uC77D\uC74C ${unread}\uAC74 \u2014 inbox \uD234\uC744 \uD638\uCD9C\uD574 \uC77D\uC5B4\uB77C.]`;
+  } catch (e) {
+    warn(`\uBBF8\uC77D\uC74C \uC218\uB97C \uD655\uC778\uD558\uC9C0 \uBABB\uD588\uB2E4: ${String(e)}`);
+    return `
+
+[\uBBF8\uC77D\uC74C \uC218\uB97C \uD655\uC778\uD558\uC9C0 \uBABB\uD588\uB2E4 \u2014 inbox \uD234\uC744 \uC9C1\uC811 \uD638\uCD9C\uD574\uB77C.]`;
+  }
 }
 function warn(message2) {
   process.stderr.write(`[agent-channel-mesh] ${message2}
@@ -23786,7 +24216,9 @@ async function main(argv) {
   }
   if (args.command === "whoami") {
     const { identity: identity2 } = await buildNode(await loadConfig(args.config));
-    process.stdout.write(whoami(identity2, args.label) + `
+    process.stdout.write(`${whoami(identity2, args.label)}
+
+` + `\uC774 \uC138\uC158\uC774 \uC0AC\uC6A9\uD558\uB294 \uC124\uC815 \uACBD\uB85C: ${expandHome2(args.config)}
 `);
     return;
   }
@@ -23812,6 +24244,7 @@ ${format(identity.fingerprint)}
     node,
     delivery: args.delivery,
     configPath: args.config,
+    runtimeFingerprint: toKey(identity.fingerprint),
     store: new MessageStore(storeOptionsOf(config2.store, identity)),
     onDropped: (d) => process.stderr.write(`[agent-channel-mesh] \uBC84\uB9BC: ${d.reason} \u2014 ${d.detail}
 `)

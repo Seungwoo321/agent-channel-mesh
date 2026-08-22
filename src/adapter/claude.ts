@@ -42,6 +42,13 @@ export interface ClaudeAdapterOptions {
   readonly onError?: (e: unknown) => void
 }
 
+export type PushState = 'unknown' | 'available' | 'unavailable'
+
+export interface PushStatus {
+  readonly state: PushState
+  readonly lastError?: string
+}
+
 /** `inject` 에 배치 단위 판단을 넘긴다. */
 export interface InjectOptions {
   /** 머리 지시를 붙일지. 생략하면 채널 그룹별 건수로 정해진다. */
@@ -86,10 +93,20 @@ export const CAPABILITIES = {
 export class ClaudeAdapter {
   private readonly notify: Notify
   private readonly onError?: (e: unknown) => void
+  private state: PushState = 'unknown'
+  private lastError: string | undefined
 
   constructor(options: ClaudeAdapterOptions) {
     this.notify = options.notify
     this.onError = options.onError
+  }
+
+  /** 마지막 주입 시도 결과. 알림은 저장소 정본을 대체하지 않으므로 진단용이다. */
+  get pushStatus(): PushStatus {
+    return {
+      state: this.state,
+      ...(this.lastError !== undefined ? { lastError: this.lastError } : {}),
+    }
   }
 
   /**
@@ -118,11 +135,19 @@ export class ClaudeAdapter {
     for (const group of groupByChannel(messages)) {
       try {
         await this.notifyChannel(group.channelId, group.messages, head)
+        this.state = 'available'
+        this.lastError = undefined
         for (const m of group.messages) delivered.push(m.id)
       } catch (e) {
         // 채널 하나가 실패해도 나머지는 보낸다. 실패한 채널의 id 는 돌려주지
         // 않으므로 미전달로 남고, 훅 안전망(§6.6)이 그것을 잡는다.
-        this.onError?.(e)
+        this.state = 'unavailable'
+        this.lastError = e instanceof Error ? e.message : String(e)
+        try {
+          this.onError?.(e)
+        } catch {
+          // 진단 콜백의 실패가 다른 채널 주입과 재시도 경로를 죽이지 않게 한다.
+        }
       }
     }
     return delivered

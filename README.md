@@ -140,6 +140,12 @@ session; changing it inside a running session has no effect.
 A config file that does not exist yet is not an error: the server that comes up has a single `setup`
 tool, which creates the identity at that path. Restart the session afterwards to get the full node.
 
+At runtime, `whoami` reports the expanded config path, and core tool responses include relay health,
+receiver-lease state, and Claude push state when available. Only one relay receiver may consume a
+fingerprint's local store at a time; a duplicate adapter stays out of the receive loop and reports the
+contention. With `both` delivery, Claude push is the fast path and the inbox/store is the durable
+fallback, so a push failure remains visible without discarding the message.
+
 ## Authority of what arrives
 
 Channel members are **peers.** There is no above or below, and what arrives is **shared context**,
