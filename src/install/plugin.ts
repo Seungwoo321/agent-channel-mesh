@@ -172,6 +172,13 @@ export function pluginHooks(): { hooks: HookMap } {
  *
  * 반대로 붙이면 어느 쪽도 오류를 내지 않는다 — MCP 서버가 조용히 못 뜨고,
  * 툴만 없는 상태가 된다. 그래서 모양을 하나로 합치지 않는다.
+ *
+ * **Codex 의 설정 경로는 `--config-default` 로 적는다.** 못 박는 `--config` 가
+ * 아니다 — 여기 적는 것은 그 에이전트의 기본 신원이고, 세션마다 다른 신원을
+ * `ACM_CONFIG` 로 고를 길이 남아 있어야 한다(워크트리 하나가 자기 지문을 갖는
+ * 경우). 그렇다고 비워 두면 Codex 가 Claude 의 기본 설정을 물어 두 에이전트가
+ * 한 신원·한 수신함을 공유한다. 훅 쪽도 같은 우선순위다(`hookRunner` 의
+ * `ACM_CONFIG="${ACM_CONFIG:-$config}"`).
  */
 export function pluginMcp(agent: 'claude' | 'codex'): unknown {
   const server =
@@ -182,7 +189,7 @@ export function pluginMcp(agent: 'claude' | 'codex'): unknown {
         }
       : {
           command: 'bun',
-          args: [BUNDLE_REL, '--delivery', 'inbox', '--config', CODEX_CONFIG_PATH],
+          args: [BUNDLE_REL, '--delivery', 'inbox', '--config-default', CODEX_CONFIG_PATH],
           cwd: '.',
         }
   return { mcpServers: { [PACKAGE_NAME]: server } }

@@ -338,6 +338,51 @@ describe('인자', () => {
     })
   })
 
+  // 설정 경로의 우선순위 (§6.4) — `--config` → ACM_CONFIG → `--config-default` → 기본값.
+  // 매니페스트가 적는 것은 런타임의 **기본** 신원이라 환경변수에 져야 한다. 그 자리에
+  // `--config` 를 쓰면 워크트리마다 다른 신원을 고를 길이 막힌다.
+  test('--config 는 ACM_CONFIG 를 이긴다', () => {
+    expect(
+      parseArgs(['--delivery', 'inbox', '--config', '/pin.json'], { ACM_CONFIG: '/e.json' }).config,
+    ).toBe('/pin.json')
+  })
+
+  test('ACM_CONFIG 는 --config-default 를 이긴다', () => {
+    expect(
+      parseArgs(['--delivery', 'inbox', '--config-default', '/d.json'], { ACM_CONFIG: '/e.json' })
+        .config,
+    ).toBe('/e.json')
+  })
+
+  test('ACM_CONFIG 가 없으면 --config-default 를 쓴다 — 기본값으로 떨어지지 않는다', () => {
+    expect(parseArgs(['--delivery', 'inbox', '--config-default', '/d.json'], {}).config).toBe(
+      '/d.json',
+    )
+    // 공백뿐인 값은 없는 것과 같다. 안 그러면 빈 경로를 신원으로 읽으러 간다.
+    expect(
+      parseArgs(['--delivery', 'inbox', '--config-default', '/d.json'], { ACM_CONFIG: '  ' })
+        .config,
+    ).toBe('/d.json')
+  })
+
+  test('인자 순서가 우선순위를 흔들지 않는다', () => {
+    expect(
+      parseArgs(['--config', '/pin.json', '--config-default', '/d.json', '--delivery', 'inbox'])
+        .config,
+    ).toBe('/pin.json')
+    expect(
+      parseArgs(['--config-default', '/d.json', '--config', '/pin.json', '--delivery', 'inbox'])
+        .config,
+    ).toBe('/pin.json')
+  })
+
+  test('hook 앞의 --config-default 도 훅이 물려받는다', () => {
+    expect(parseArgs(['--config-default', '/d.json', 'hook', '--event', 'Stop'])).toMatchObject({
+      command: 'hook',
+      config: '/d.json',
+    })
+  })
+
   test('폴링 비용 설정을 환경변수로 읽는다', () => {
     expect(
       parseArgs(['--delivery', 'inbox'], { ACM_POLL_MS: '5000', ACM_POLL_MAX_MS: '600000' }),

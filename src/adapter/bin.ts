@@ -56,7 +56,10 @@ const USAGE = `agent-channel-mesh
                               훅 런타임. 에이전트가 부른다 (직접 부를 일은 없다)
   --delivery <push|inbox|both> 어댑터를 띄운다
 
-  --config <path>   기본값 ${DEFAULT_CONFIG_PATH} (환경변수 ACM_CONFIG 로도 지정)
+  --config <path>   신원을 못 박는다. 기본값 ${DEFAULT_CONFIG_PATH}
+  --config-default <path>
+                    이 런타임의 기본 신원. ACM_CONFIG 가 있으면 그것이 이긴다
+                    (우선순위: --config → ACM_CONFIG → --config-default → 기본값)
   --relay <url>     init 이 설정에 박아 둘 릴레이 URL
   --label <name>    내 이름 (기본값: 내이름)
 
@@ -74,10 +77,28 @@ const USAGE = `agent-channel-mesh
                      함께 있어야 통째로 막히지 않는다 (§4)
 `
 
-/** 인자를 읽는다. 모르는 인자는 무시하지 않고 던진다 — 오타가 조용히 기본값이 되면 안 된다. */
+/**
+ * 인자를 읽는다. 모르는 인자는 무시하지 않고 던진다 — 오타가 조용히 기본값이 되면 안 된다.
+ *
+ * 설정 경로의 우선순위는 `--config` → `ACM_CONFIG` → `--config-default` →
+ * 기본값이다(§6.4). 두 플래그를 가르는 이유는 **누가 무엇을 정하는가**가 다르기
+ * 때문이다. `--config` 는 "이 신원으로 못 박는다"이고 환경을 이긴다. 반면
+ * 플러그인 매니페스트가 적는 것은 그 에이전트의 **기본** 신원일 뿐이라, 세션마다
+ * 다른 신원(워크트리 하나가 자기 지문을 갖는 경우)을 `ACM_CONFIG` 로 고를 길이
+ * 남아 있어야 한다. 매니페스트가 `--config` 로 적으면 그 길이 막히고, 그렇다고
+ * 아무것도 안 적으면 Codex 가 Claude 의 기본 설정을 물어 두 에이전트가 한 신원을
+ * 공유한다 — 릴레이 수신함은 지문 단위이고 조회가 가져가며 비우므로, 그때 서로의
+ * 말을 훔친다.
+ */
 export function parseArgs(argv: readonly string[], env: Record<string, string | undefined> = {}): Args {
   let delivery: string | undefined = env.ACM_DELIVERY
-  let config = env.ACM_CONFIG ?? DEFAULT_CONFIG_PATH
+  // 못 박은 값(`--config`)과 런타임 기본값(`--config-default`)을 따로 들고 있다가
+  // 마지막에 우선순위로 접는다. 한 변수에 덮어쓰면 인자 순서가 우선순위를 흔든다.
+  let pinnedConfig: string | undefined
+  let defaultConfig = DEFAULT_CONFIG_PATH
+  const envConfig = env.ACM_CONFIG?.trim()
+  const resolveConfig = (): string =>
+    pinnedConfig ?? (envConfig !== undefined && envConfig !== '' ? envConfig : defaultConfig)
   let command: Command = 'serve'
   let relay: string | undefined
   let label: string | undefined
@@ -90,13 +111,16 @@ export function parseArgs(argv: readonly string[], env: Record<string, string | 
     if (arg === 'init' || arg === 'whoami') command = arg
     // `hook` 뒤는 훅 런타임의 인자다. 여기서 해석하면 `--event` 가 «모르는
     // 인자» 로 죽고, 훅이 죽으면 에이전트에 따라 프롬프트까지 막힌다.
-    else if (arg === 'hook') return { command: 'hook', config, rest: argv.slice(i + 1) }
+    else if (arg === 'hook') return { command: 'hook', config: resolveConfig(), rest: argv.slice(i + 1) }
     else if (arg === '--delivery') delivery = argv[++i]
-    else if (arg === '--config') config = argv[++i] ?? config
+    else if (arg === '--config') pinnedConfig = argv[++i] ?? pinnedConfig
+    else if (arg === '--config-default') defaultConfig = argv[++i] ?? defaultConfig
     else if (arg === '--relay') relay = argv[++i]
     else if (arg === '--label') label = argv[++i]
     else throw new Error(`모르는 인자: ${arg}\n\n${USAGE}`)
   }
+
+  const config = resolveConfig()
 
   // 전달 방식은 서버를 띄울 때만 필요하다. init 에까지 요구하면
   // 설정을 만들기 전에 전달 방식을 정하라는 말이 된다.

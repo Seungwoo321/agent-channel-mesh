@@ -23661,7 +23661,10 @@ var USAGE = `agent-channel-mesh
                               \uD6C5 \uB7F0\uD0C0\uC784. \uC5D0\uC774\uC804\uD2B8\uAC00 \uBD80\uB978\uB2E4 (\uC9C1\uC811 \uBD80\uB97C \uC77C\uC740 \uC5C6\uB2E4)
   --delivery <push|inbox|both> \uC5B4\uB311\uD130\uB97C \uB744\uC6B4\uB2E4
 
-  --config <path>   \uAE30\uBCF8\uAC12 ${DEFAULT_CONFIG_PATH} (\uD658\uACBD\uBCC0\uC218 ACM_CONFIG \uB85C\uB3C4 \uC9C0\uC815)
+  --config <path>   \uC2E0\uC6D0\uC744 \uBABB \uBC15\uB294\uB2E4. \uAE30\uBCF8\uAC12 ${DEFAULT_CONFIG_PATH}
+  --config-default <path>
+                    \uC774 \uB7F0\uD0C0\uC784\uC758 \uAE30\uBCF8 \uC2E0\uC6D0. ACM_CONFIG \uAC00 \uC788\uC73C\uBA74 \uADF8\uAC83\uC774 \uC774\uAE34\uB2E4
+                    (\uC6B0\uC120\uC21C\uC704: --config \u2192 ACM_CONFIG \u2192 --config-default \u2192 \uAE30\uBCF8\uAC12)
   --relay <url>     init \uC774 \uC124\uC815\uC5D0 \uBC15\uC544 \uB458 \uB9B4\uB808\uC774 URL
   --label <name>    \uB0B4 \uC774\uB984 (\uAE30\uBCF8\uAC12: \uB0B4\uC774\uB984)
 
@@ -23680,7 +23683,10 @@ var USAGE = `agent-channel-mesh
 `;
 function parseArgs(argv, env = {}) {
   let delivery = env.ACM_DELIVERY;
-  let config2 = env.ACM_CONFIG ?? DEFAULT_CONFIG_PATH;
+  let pinnedConfig;
+  let defaultConfig = DEFAULT_CONFIG_PATH;
+  const envConfig = env.ACM_CONFIG?.trim();
+  const resolveConfig = () => pinnedConfig ?? (envConfig !== undefined && envConfig !== "" ? envConfig : defaultConfig);
   let command = "serve";
   let relay;
   let label;
@@ -23692,11 +23698,13 @@ function parseArgs(argv, env = {}) {
     if (arg === "init" || arg === "whoami")
       command = arg;
     else if (arg === "hook")
-      return { command: "hook", config: config2, rest: argv.slice(i + 1) };
+      return { command: "hook", config: resolveConfig(), rest: argv.slice(i + 1) };
     else if (arg === "--delivery")
       delivery = argv[++i];
     else if (arg === "--config")
-      config2 = argv[++i] ?? config2;
+      pinnedConfig = argv[++i] ?? pinnedConfig;
+    else if (arg === "--config-default")
+      defaultConfig = argv[++i] ?? defaultConfig;
     else if (arg === "--relay")
       relay = argv[++i];
     else if (arg === "--label")
@@ -23706,6 +23714,7 @@ function parseArgs(argv, env = {}) {
 
 ${USAGE}`);
   }
+  const config2 = resolveConfig();
   if (command !== "serve")
     return { command, config: config2, relay, relayToken, label };
   if (delivery !== "push" && delivery !== "inbox" && delivery !== "both") {

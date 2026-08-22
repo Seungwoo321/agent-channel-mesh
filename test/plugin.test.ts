@@ -269,9 +269,23 @@ describe('MCP 서버 — 번들에 닿는 길이 에이전트마다 다르다', 
     // 환경변수로도 오지 않는다. 대신 `cwd` 는 플러그인 루트 기준으로 풀린다.
     expect(serverOf(codexManifest(version))).toEqual({
       command: 'bun',
-      args: ['dist/acm.js', '--delivery', 'inbox', '--config', '~/.agent-channel-mesh/codex.json'],
+      args: [
+        'dist/acm.js',
+        '--delivery',
+        'inbox',
+        '--config-default',
+        '~/.agent-channel-mesh/codex.json',
+      ],
       cwd: '.',
     })
+  })
+
+  test('Codex 설정은 못 박지 않는다 — ACM_CONFIG 로 갈 길을 남긴다', () => {
+    // `--config` 로 적으면 환경변수가 지므로 워크트리마다 다른 신원을 쓸 수 없고,
+    // 아예 비우면 Claude 의 기본 설정을 물어 한 수신함을 둘이 나눠 갖는다.
+    const args = serverOf(codexManifest(version)).args
+    expect(args).not.toContain('--config')
+    expect(args).toContain('--config-default')
   })
 
   test('Codex 인자에 변수를 넣지 않는다', () => {

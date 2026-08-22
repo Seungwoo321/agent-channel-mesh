@@ -22,7 +22,7 @@
         "dist/acm.js",
         "--delivery",
         "inbox",
-        "--config",
+        "--config-default",
         "~/.agent-channel-mesh/codex.json"
       ],
       "cwd": "."
