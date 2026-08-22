@@ -109,6 +109,28 @@ ACM_POLL_MAX_MS=300000 # idle/error maximum interval: 5 minutes (default)
 
 Updating the plugin does not replace MCP processes that are already running. After installing the usage-protected version, restart the Claude and Codex sessions. Stale sessions or orphaned processes otherwise keep using the old polling policy.
 
+## One identity per session
+
+The plugin manifest names the agent's **default** identity, not a pinned one, so a session can pick a
+different config file with `ACM_CONFIG`:
+
+```bash
+ACM_CONFIG=~/.agent-channel-mesh/codex-ticket-1234.json codex
+```
+
+Parallel git worktrees need this. A relay inbox is keyed by fingerprint and reading it **removes**
+the envelopes, so two worktrees sharing one identity steal each other's messages, and no sender can
+address one worktree in particular. Give each worktree its own config file, and discard it when that
+work ends.
+
+Precedence is `--config` (pinned, e.g. by the installer) → `ACM_CONFIG` → `--config-default`
+(what the plugin manifest declares) → `~/.agent-channel-mesh/config.json`. The adapter expands `~`
+itself, so quoting the value is safe. The value is read **when the MCP process starts** — set it
+before launching the session; changing it inside a running session has no effect.
+
+A config file that does not exist yet is not an error: the server that comes up has a single `setup`
+tool, which creates the identity at that path. Restart the session afterwards to get the full node.
+
 ## Authority of what arrives
 
 Channel members are **peers.** There is no above or below, and what arrives is **shared context**,
