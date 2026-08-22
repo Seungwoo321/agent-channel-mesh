@@ -39,21 +39,23 @@ const SESSION_KEY_BYTES = 16
  * 세션 ID를 MCP 프로세스에 전달하는 버전에서는 `CODEX_THREAD_ID` 로 세션별
  * 경로를 자동 파생하고, Claude Code나 외부 런처는 `CLAUDE_SESSION_ID`·
  * `ACM_SESSION_ID` 를 사용할 수 있다. 세션 ID가 없는 구버전 호스트에서는
- * 기존 에이전트 기본값으로 돌아가되, 플러그인 매니페스트의 `env_vars` 가
- * 다음 실행에서 이 경로를 받을 수 있게 한다.
+ * 기존 에이전트 기본값으로 돌아가되, `ACM_SESSION_ID`만 있는 경우에는
+ * 호출자가 넘긴 `fallbackAgent`를 사용해 MCP와 hook의 해석을 맞춘다.
  */
 export function configPathFromEnv(
   env: Record<string, string | undefined> = process.env,
+  fallbackAgent: 'claude' | 'codex' = 'claude',
 ): string | undefined {
   const explicit = env.ACM_CONFIG?.trim()
   if (explicit !== undefined && explicit !== '') return explicit
 
+  const agent = env.PLUGIN_ROOT?.trim() ? 'codex' : fallbackAgent
   const session = env.CODEX_THREAD_ID?.trim()
     ? { agent: 'codex', id: env.CODEX_THREAD_ID.trim() }
     : env.CLAUDE_SESSION_ID?.trim()
       ? { agent: 'claude', id: env.CLAUDE_SESSION_ID.trim() }
       : env.ACM_SESSION_ID?.trim()
-        ? { agent: env.PLUGIN_ROOT === undefined ? 'claude' : 'codex', id: env.ACM_SESSION_ID.trim() }
+        ? { agent, id: env.ACM_SESSION_ID.trim() }
         : undefined
   if (session === undefined) return undefined
 

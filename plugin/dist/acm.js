@@ -14612,11 +14612,12 @@ var DEFAULT_CONFIG_PATH = "~/.agent-channel-mesh/config.json";
 var CODEX_CONFIG_PATH = "~/.agent-channel-mesh/codex.json";
 var SESSION_CONFIG_DIR = "~/.agent-channel-mesh/sessions";
 var SESSION_KEY_BYTES = 16;
-function configPathFromEnv(env = process.env) {
+function configPathFromEnv(env = process.env, fallbackAgent = "claude") {
   const explicit = env.ACM_CONFIG?.trim();
   if (explicit !== undefined && explicit !== "")
     return explicit;
-  const session = env.CODEX_THREAD_ID?.trim() ? { agent: "codex", id: env.CODEX_THREAD_ID.trim() } : env.CLAUDE_SESSION_ID?.trim() ? { agent: "claude", id: env.CLAUDE_SESSION_ID.trim() } : env.ACM_SESSION_ID?.trim() ? { agent: env.PLUGIN_ROOT === undefined ? "claude" : "codex", id: env.ACM_SESSION_ID.trim() } : undefined;
+  const agent = env.PLUGIN_ROOT?.trim() ? "codex" : fallbackAgent;
+  const session = env.CODEX_THREAD_ID?.trim() ? { agent: "codex", id: env.CODEX_THREAD_ID.trim() } : env.CLAUDE_SESSION_ID?.trim() ? { agent: "claude", id: env.CLAUDE_SESSION_ID.trim() } : env.ACM_SESSION_ID?.trim() ? { agent, id: env.ACM_SESSION_ID.trim() } : undefined;
   if (session === undefined)
     return;
   const digest = sha256(new TextEncoder().encode(`${session.agent}:${session.id}`));
@@ -23713,8 +23714,12 @@ function parseArgs(argv, env = {}) {
   let delivery = env.ACM_DELIVERY;
   let pinnedConfig;
   let defaultConfig = DEFAULT_CONFIG_PATH;
-  const envConfig = configPathFromEnv(env);
-  const resolveConfig = () => pinnedConfig ?? (envConfig !== undefined ? envConfig : defaultConfig);
+  const resolveConfig = () => {
+    if (pinnedConfig !== undefined)
+      return pinnedConfig;
+    const fallbackAgent = defaultConfig === CODEX_CONFIG_PATH ? "codex" : "claude";
+    return configPathFromEnv(env, fallbackAgent) ?? defaultConfig;
+  };
   let command = "serve";
   let relay;
   let label;

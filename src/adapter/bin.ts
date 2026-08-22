@@ -19,6 +19,7 @@ import {
   storeOptionsOf,
   expandHome,
   DEFAULT_CONFIG_PATH,
+  CODEX_CONFIG_PATH,
   configPathFromEnv,
 } from './config.js'
 import { serve, type Delivery } from './server.js'
@@ -104,10 +105,13 @@ export function parseArgs(argv: readonly string[], env: Record<string, string | 
   let pinnedConfig: string | undefined
   let defaultConfig = DEFAULT_CONFIG_PATH
   // ACM_CONFIG 가 있으면 그대로 쓰고, Codex/Claude 가 세션 ID를 넘기면
-  // 세션별 경로를 자동 파생한다. 매니페스트의 --config-default 는 그 다음이다.
-  const envConfig = configPathFromEnv(env)
-  const resolveConfig = (): string =>
-    pinnedConfig ?? (envConfig !== undefined ? envConfig : defaultConfig)
+  // 세션별 경로를 자동 파생한다. ACM_SESSION_ID만 있는 호스트도
+  // --config-default가 Codex 경로인지 보고 MCP와 hook의 agent를 맞춘다.
+  const resolveConfig = (): string => {
+    if (pinnedConfig !== undefined) return pinnedConfig
+    const fallbackAgent = defaultConfig === CODEX_CONFIG_PATH ? 'codex' : 'claude'
+    return configPathFromEnv(env, fallbackAgent) ?? defaultConfig
+  }
   let command: Command = 'serve'
   let relay: string | undefined
   let label: string | undefined

@@ -247,6 +247,15 @@ describe('세션 설정 경로는 세션마다 파생한다', () => {
     )
   })
 
+  test('ACM_SESSION_ID만 있으면 호출자가 정한 agent를 따른다', () => {
+    const env = { ACM_SESSION_ID: 'session-a' }
+    const codex = configPathFromEnv(env, 'codex')
+    const claude = configPathFromEnv(env, 'claude')
+    expect(codex).toMatch(new RegExp(`^${SESSION_CONFIG_DIR}/codex/[0-9a-f]{32}\\.json$`))
+    expect(claude).toMatch(new RegExp(`^${SESSION_CONFIG_DIR}/claude/[0-9a-f]{32}\\.json$`))
+    expect(codex).not.toBe(claude)
+  })
+
   test('명시한 ACM_CONFIG가 자동 경로보다 우선한다', () => {
     expect(
       configPathFromEnv({ ACM_CONFIG: '/explicit.json', CODEX_THREAD_ID: 'thread-a' }),
@@ -375,7 +384,16 @@ describe('인자', () => {
     expect(args.config).toBe(expected!)
   })
 
-  // 설정 경로의 우선순위 (§6.4) — `--config` → ACM_CONFIG → `--config-default` → 기본값.
+  test('ACM_SESSION_ID만 있는 Codex도 매니페스트 기본 agent로 경로를 고른다', () => {
+    const env = { ACM_SESSION_ID: 'session-a' }
+    const expected = configPathFromEnv(env, 'codex')
+    expect(expected).toBeDefined()
+    expect(parseArgs(['--delivery', 'inbox', '--config-default', CODEX_CONFIG_PATH], env).config).toBe(
+      expected!,
+    )
+  })
+
+  // 설정 경로의 우선순위 (§6.4) — `--config` → ACM_CONFIG → 세션 경로 → `--config-default` → 기본값.
   // 매니페스트가 적는 것은 런타임의 **기본** 신원이라 환경변수에 져야 한다. 그 자리에
   // `--config` 를 쓰면 워크트리마다 다른 신원을 고를 길이 막힌다.
   test('--config 는 ACM_CONFIG 를 이긴다', () => {
